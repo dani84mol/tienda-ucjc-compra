@@ -8,15 +8,38 @@
 const EVT_ADD = 'ucjc:descubrimiento:anadir-al-carrito@1';
 const EVT_SES = 'ucjc:identidad:sesion-cambiada@1';
 const EVT_PED = 'ucjc:compra:pedido-confirmado@1';
+const EVT_PED_V2 = 'ucjc:compra:pedido-confirmado@2';
+
+// pedido-confirmado@2 (con «moneda») está PROPUESTO, no firmado. El contrato dice:
+// «Mientras esté propuesto, Compra sigue emitiendo el @1». Cuando se firme, poner true.
+export const EMITIR_PEDIDO_V2 = false;
 
 const CLAVE_GUARDADO = 'ucjc-compra:carrito';
+const CLAVE_MONEDA = 'ucjc-compra:moneda';
 const MAX_POR_LINEA = 99;
+
+// ---------- Monedas ----------
+// Los precios llegan siempre en euros (anadir-al-carrito@1). Se convierten con el tipo de cambio
+// de referencia del BCE, sin comisión ni recargo: pagar en otra moneda no sale más caro.
+// Fuente: Banque de France, paridades diarias del 16/11/2026.
+export const MONEDAS = {
+  EUR: { simbolo: '€', nombre: 'Euros', tasa: 1 },
+  USD: { simbolo: '$', nombre: 'Dólares', tasa: 1.1014 },
+  GBP: { simbolo: '£', nombre: 'Libras', tasa: 0.8345 },
+};
+const FECHA_TIPOS = '16/11/2026';
 
 // ---------- Utilidades ----------
 // Los importes se calculan en céntimos (enteros) para evitar errores como 0.1 + 0.2 = 0.30000000000000004
 const aCent = (euros) => Math.round(euros * 100);
 const deCent = (cent) => cent / 100;
 const euros = (n) => `${n.toFixed(2).replace('.', ',')} €`;
+// Precio unitario en euros → céntimos de la moneda elegida.
+// Se redondea SIEMPRE hacia abajo: así la suma nunca supera la conversión exacta del total
+// (redondeando al más cercano, 47,48 € salían 52,30 $ en vez de 52,29 $: 1 céntimo de más).
+// El 1e-9 evita que un 2201,9999999 por coma flotante se quede en 2201.
+const enMoneda = (precioEur, moneda) => Math.floor(aCent(precioEur) * MONEDAS[moneda].tasa + 1e-9);
+const importe = (cent, moneda) => `${deCent(cent).toFixed(2).replace('.', ',')} ${MONEDAS[moneda].simbolo}`;
 
 // Todo lo que viene de otra pieza se escapa antes de meterlo en innerHTML.
 const esc = (t) =>
@@ -46,6 +69,25 @@ function lineaValida(d) {
   if (!Number.isInteger(cantidad) || cantidad < 1) return null;
   return { productoId, nombre, precio, cantidad };
 }
+
+// Moneda elegida (se recuerda entre visitas). Si no hay nada guardado, euros.
+const monedaGuardada = {
+  leer() {
+    try {
+      const m = localStorage.getItem(CLAVE_MONEDA);
+      return m in MONEDAS ? m : 'EUR';
+    } catch {
+      return 'EUR';
+    }
+  },
+  escribir(m) {
+    try {
+      localStorage.setItem(CLAVE_MONEDA, m);
+    } catch {
+      /* sin almacenamiento */
+    }
+  },
+};
 
 // localStorage puede no existir o fallar (modo privado, iframes…): nunca debe romper la pieza.
 const guardado = {
@@ -109,6 +151,10 @@ const css = `
   .resumen p { margin:0 0 8px; font-size:14px; color:#3e4c59; }
   .resumen ul { margin:0 0 8px; padding-left:1.1rem; font-size:14px; }
   .resumen .total { font-size:16px; margin:0; }
+  .moneda { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 12px; font-size:14px; }
+  .moneda select { font:inherit; padding:6px 10px; border:1px solid #c4c4c4; border-radius:8px; background:#fff; }
+  .moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
+  .moneda small { color:#52606d; }
 
   /* Móvil: cada línea del carrito pasa a ser una tarjeta */
   @media (max-width: 520px) {
@@ -129,6 +175,7 @@ class UcjcCompra extends HTMLElement {
   #flash = { texto: '', tipo: 'ok' };
   #deshacer = null; // líneas que había antes de «Vaciar»
   #ultimoPedido = null; // resumen del último pedido confirmado (solo para mostrar)
+  #moneda = monedaGuardada.leer(); // 'EUR' | 'USD' | 'GBP'
 
   get #usuarioId() {
     return this.#usuario?.id ?? null;
@@ -176,6 +223,9 @@ class UcjcCompra extends HTMLElement {
       this.attachShadow({ mode: 'open' });
       // Un solo listener para todos los botones (no se pierde al repintar).
       this.shadowRoot.addEventListener('click', (e) => this.#clic(e));
+      this.shadowRoot.addEventListener('change', (e) => {
+        if (e.target.matches('select[data-moneda]')) this.#cambiarMoneda(e.target.value);
+      });
     }
     window.addEventListener(EVT_ADD, this.#onAdd);
     window.addEventListener(EVT_SES, this.#onSes);
@@ -188,8 +238,22 @@ class UcjcCompra extends HTMLElement {
   }
 
   // ---------- Cálculos ----------
+  // Total en céntimos de EURO (lo que manda el contrato @1).
   #totalCent() {
     return this.#lineas.reduce((s, l) => s + aCent(l.precio) * l.cantidad, 0);
+  }
+
+  // Total en céntimos de la moneda elegida: suma de las líneas ya convertidas,
+  // así el total cuadra siempre con lo que se ve en cada línea.
+  #totalMonedaCent(moneda = this.#moneda) {
+    return this.#lineas.reduce((s, l) => s + enMoneda(l.precio, moneda) * l.cantidad, 0);
+  }
+
+  #cambiarMoneda(m) {
+    if (!(m in MONEDAS) || m === this.#moneda) return;
+    this.#moneda = m;
+    monedaGuardada.escribir(m);
+    this.#avisar(`Pagarás en ${MONEDAS[m].nombre.toLowerCase()}.`);
   }
 
   #unidades() {
@@ -214,12 +278,27 @@ class UcjcCompra extends HTMLElement {
       total: deCent(this.#totalCent()),
       lineas: this.#lineas.map(({ productoId, nombre, precio, cantidad }) => ({ productoId, nombre, precio, cantidad })),
     };
+    // Lo que el usuario paga de verdad, en su moneda (para el resumen y para el @2).
+    const moneda = this.#moneda;
+    const pagado = {
+      moneda,
+      total: deCent(this.#totalMonedaCent(moneda)),
+      lineas: detail.lineas.map((l) => ({ ...l, precio: deCent(enMoneda(l.precio, moneda)) })),
+    };
     // Se vacía ANTES de emitir: un doble clic no puede mandar el mismo pedido dos veces.
     this.#lineas = [];
     this.#deshacer = null;
-    this.#ultimoPedido = detail;
+    this.#ultimoPedido = { ...detail, pagado };
+    // @1 firmado: siempre en euros y con sus 5 campos exactos.
     window.dispatchEvent(new CustomEvent(EVT_PED, { detail }));
-    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${euros(detail.total)})`);
+    // @2 (propuesto): mismo pedido en la moneda elegida. Apagado hasta que se firme.
+    if (EMITIR_PEDIDO_V2) {
+      const { pedidoId, usuarioId, creadoEn } = detail;
+      window.dispatchEvent(new CustomEvent(EVT_PED_V2, {
+        detail: { pedidoId, usuarioId, creadoEn, moneda, total: pagado.total, lineas: pagado.lineas },
+      }));
+    }
+    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${importe(aCent(pagado.total), moneda)})`);
   }
 
   #cambiar(productoId, delta) {
@@ -286,6 +365,7 @@ class UcjcCompra extends HTMLElement {
     const hay = this.#lineas.length > 0;
     const unidades = this.#unidades();
     const u = this.#usuario;
+    const mon = this.#moneda;
 
     const filas = hay
       ? this.#lineas
@@ -293,13 +373,13 @@ class UcjcCompra extends HTMLElement {
             const n = esc(l.nombre);
             const id = esc(l.productoId);
             return `<tr>
-              <td>${n}<span class="ud">${euros(l.precio)} / ud.</span></td>
+              <td>${n}<span class="ud">${importe(enMoneda(l.precio, mon), mon)} / ud.</span></td>
               <td class="r"><span class="cant">
                 <button type="button" data-menos="${id}" aria-label="Quitar una unidad de ${n}">−</button>
                 <output aria-label="Cantidad de ${n}">${l.cantidad}</output>
                 <button type="button" data-mas="${id}" aria-label="Añadir una unidad de ${n}" ${l.cantidad >= MAX_POR_LINEA ? 'disabled' : ''}>+</button>
               </span></td>
-              <td class="r subtotal">${euros(deCent(aCent(l.precio) * l.cantidad))}</td>
+              <td class="r subtotal">${importe(enMoneda(l.precio, mon) * l.cantidad, mon)}</td>
               <td class="r acciones"><button type="button" class="quitar" data-quitar="${id}" aria-label="Quitar ${n} del carrito">Quitar</button></td>
             </tr>`;
           })
@@ -311,8 +391,9 @@ class UcjcCompra extends HTMLElement {
       ? `<section class="resumen" aria-label="Último pedido confirmado">
           <h3>✅ Pedido confirmado</h3>
           <p><b>${esc(p.pedidoId)}</b> · ${hora(p.creadoEn)} · ${esc(u?.email || p.usuarioId)}</p>
-          <ul>${p.lineas.map((l) => `<li>${l.cantidad} × ${esc(l.nombre)} — ${euros(deCent(aCent(l.precio) * l.cantidad))}</li>`).join('')}</ul>
-          <p class="total"><span>Total pagado</span><b>${euros(p.total)}</b></p>
+          <ul>${p.pagado.lineas.map((l) => `<li>${l.cantidad} × ${esc(l.nombre)} — ${importe(aCent(l.precio) * l.cantidad, p.pagado.moneda)}</li>`).join('')}</ul>
+          <p class="total"><span>Total pagado</span><b>${importe(aCent(p.pagado.total), p.pagado.moneda)}</b></p>
+          ${p.pagado.moneda === 'EUR' ? '' : `<p><small>Equivale a ${euros(p.total)}.</small></p>`}
         </section>`
       : '';
 
@@ -330,12 +411,20 @@ class UcjcCompra extends HTMLElement {
         </ol>
         <h2>Carrito</h2>
         <p class="sub">Revisa los productos antes de confirmar el pedido. El carrito se guarda aunque recargues la página.</p>
+        <div class="moneda">
+          <label for="moneda">Pagar en</label>
+          <select id="moneda" data-moneda>
+            ${Object.entries(MONEDAS).map(([c, m]) => `<option value="${c}" ${c === mon ? 'selected' : ''}>${m.nombre} (${m.simbolo})</option>`).join('')}
+          </select>
+          ${mon === 'EUR' ? '' : `<small>1 € = ${String(MONEDAS[mon].tasa).replace('.', ',')} ${MONEDAS[mon].simbolo} · tipo de referencia BCE del ${FECHA_TIPOS}, sin comisión</small>`}
+        </div>
         <div class="box">
           <div class="lista"><table>
             <tr class="cabecera"><th>Producto</th><th class="r">Cantidad</th><th class="r">Precio</th><th><span hidden>Acciones</span></th></tr>
             ${filas}
           </table></div>
-          <p class="total"><small>${unidades} artículo${unidades === 1 ? '' : 's'}</small><b>Total: <span data-total>${euros(deCent(this.#totalCent()))}</span></b></p>
+          <p class="total"><small>${unidades} artículo${unidades === 1 ? '' : 's'}</small><b>Total: <span data-total>${importe(this.#totalMonedaCent(), mon)}</span></b></p>
+          ${mon !== 'EUR' && hay ? `<p class="sub" data-equivale>Equivale a ${euros(deCent(this.#totalCent()))}</p>` : ''}
           <div class="row">
             <button type="button" data-a="vaciar" ${hay ? '' : 'disabled'}>Vaciar</button>
             <button type="button" data-a="ok" class="main" ${motivo ? 'disabled aria-describedby="motivo"' : ''}>Confirmar pedido</button>

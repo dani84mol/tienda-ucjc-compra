@@ -25,6 +25,19 @@ Compra C **parte del código de Compra B** (`v0.2.0`). No cambia la etiqueta ni 
 | No se sabe cuántos artículos hay sin mirar la tabla | Contador de artículos en la cabecera |
 | En móvil la tabla se aprieta | En móvil cada línea pasa a ser una tarjeta |
 
+## Pagar en euros, dólares o libras
+
+Encima del carrito hay un selector **«Pagar en»**: Euros (€), Dólares ($) o Libras (£). La elección se recuerda al volver.
+
+- Los precios llegan siempre en euros (así lo fija `anadir-al-carrito@1`) y se convierten con el **tipo de referencia del BCE** del 16/11/2026 (1 € = 1,1014 $ = 0,8345 £), sin comisión.
+- Cada precio se redondea **hacia abajo** al céntimo: pagar en otra moneda nunca cuesta más que la conversión exacta.
+- El total es la suma de las líneas que se ven, y debajo aparece su equivalente en euros.
+- Los tipos están en `MONEDAS`, al principio de `src/ucjc-compra.js`.
+
+**Eventos:**
+- `pedido-confirmado@1` (firmado) sigue saliendo **siempre en euros y con sus 5 campos**, pague el usuario en la moneda que pague.
+- `pedido-confirmado@2` (con `moneda`) está **propuesto**, no firmado. El código ya lo genera, pero está apagado con `EMITIR_PEDIDO_V2 = false`. Cuando se firme, se pone a `true` y saldrá con la moneda y los importes que ha pagado el usuario.
+
 ## Eventos (contratos `@1` firmados en [tienda-ucjc-contratos](https://github.com/cesar-andress/tienda-ucjc-contratos))
 
 Mismos tres eventos que A y B, **sin añadir ni quitar campos**:
@@ -33,7 +46,7 @@ Mismos tres eventos que A y B, **sin añadir ni quitar campos**:
 |---|---|---|
 | `ucjc:descubrimiento:anadir-al-carrito@1` | escucha | `productoId`, `nombre`, `precio`, `cantidad` |
 | `ucjc:identidad:sesion-cambiada@1` | escucha | `autenticado`, `usuario` (`id`, `email`, `nombre?`) o `null`. Solo deja confirmar si `autenticado === true` |
-| `ucjc:compra:pedido-confirmado@1` | emite | `pedidoId`, `usuarioId`, `creadoEn`, `total`, `lineas[]` (`productoId`, `nombre`, `precio`, `cantidad`) |
+| `ucjc:compra:pedido-confirmado@1` | emite | `pedidoId`, `usuarioId`, `creadoEn`, `total`, `lineas[]` (`productoId`, `nombre`, `precio`, `cantidad`), siempre en euros |
 
 Los tests comprueban que el pedido emitido lleva **exactamente** esos campos.
 
