@@ -1,3 +1,4 @@
+
 // Compra C: parte de Compra B (que a su vez parte de Compra A) y la mejora.
 // Misma etiqueta <ucjc-compra> y los MISMOS tres contratos @1 firmados, sin añadir ni quitar campos:
 //   escucha  ucjc:descubrimiento:anadir-al-carrito@1  { productoId, nombre, precio, cantidad }
@@ -58,7 +59,7 @@ function nuevoPedidoId() {
 }
 
 // Valida el detail de anadir-al-carrito@1. Devuelve la línea limpia o null si no cumple el contrato.
-function lineaValida(d) {
+function lineaValida(d, permitirMoneda = false) {
   if (!d || typeof d !== 'object') return null;
   const productoId = d.productoId == null ? '' : String(d.productoId).trim();
   const nombre = typeof d.nombre === 'string' ? d.nombre.trim() : '';
@@ -67,7 +68,12 @@ function lineaValida(d) {
   if (!productoId || !nombre) return null;
   if (!Number.isFinite(precio) || precio < 0) return null;
   if (!Number.isInteger(cantidad) || cantidad < 1) return null;
-  return { productoId, nombre, precio, cantidad };
+
+  const moneda = permitirMoneda && typeof d.moneda === 'string' && d.moneda in MONEDAS
+    ? d.moneda
+    : 'EUR';
+
+  return { productoId, nombre, precio, cantidad, moneda };
 }
 
 // Moneda elegida (se recuerda entre visitas). Si no hay nada guardado, euros.
@@ -94,7 +100,7 @@ const guardado = {
   leer() {
     try {
       const datos = JSON.parse(localStorage.getItem(CLAVE_GUARDADO) || '[]');
-      return Array.isArray(datos) ? datos.map(lineaValida).filter(Boolean) : [];
+      return Array.isArray(datos) ? datos.map((d) => lineaValida(d, true)).filter(Boolean) : [];
     } catch {
       return [];
     }
@@ -136,6 +142,8 @@ const css = `
   .vacio { color:#52606d; font-style:italic; text-align:center; padding:18px 4px; }
   .total { display:flex; justify-content:space-between; align-items:baseline; font-size:18px; margin:14px 0; }
   .total small { font-size:14px; color:#52606d; }
+  .totales { margin:14px 0; }
+  .totales .total { margin:6px 0; }
   .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
   button { font:inherit; font-size:15px; padding:8px 16px; border:1px solid #c4c4c4; border-radius:8px; background:#ececec; color:#1f2933; cursor:pointer; }
   button:hover:not(:disabled) { filter:brightness(.95); }
@@ -154,7 +162,9 @@ const css = `
   .moneda { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 12px; font-size:14px; }
   .moneda select { font:inherit; padding:6px 10px; border:1px solid #c4c4c4; border-radius:8px; background:#fff; }
   .moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
-  .moneda small { color:#52606d; }
+  .selector-moneda { display:flex; align-items:center; gap:5px; margin-top:5px; font-size:12px; color:#52606d; }
+  .selector-moneda select { font:inherit; font-size:12px; padding:3px 6px; border:1px solid #c4c4c4; border-radius:6px; background:#fff; color:#1f2933; }
+  .selector-moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
 
   /* Móvil: cada línea del carrito pasa a ser una tarjeta */
   @media (max-width: 520px) {
@@ -224,7 +234,9 @@ class UcjcCompra extends HTMLElement {
       // Un solo listener para todos los botones (no se pierde al repintar).
       this.shadowRoot.addEventListener('click', (e) => this.#clic(e));
       this.shadowRoot.addEventListener('change', (e) => {
-        if (e.target.matches('select[data-moneda]')) this.#cambiarMoneda(e.target.value);
+        if (e.target.matches('select[data-moneda]')) {
+          this.#cambiarMoneda(e.target.dataset.productoId, e.target.value);
+        }
       });
     }
     window.addEventListener(EVT_ADD, this.#onAdd);
@@ -246,14 +258,19 @@ class UcjcCompra extends HTMLElement {
   // Total en céntimos de la moneda elegida: suma de las líneas ya convertidas,
   // así el total cuadra siempre con lo que se ve en cada línea.
   #totalMonedaCent(moneda = this.#moneda) {
-    return this.#lineas.reduce((s, l) => s + enMoneda(l.precio, moneda) * l.cantidad, 0);
+    return this.#lineas.reduce(
+      (s, l) => s + (l.moneda === moneda ? enMoneda(l.precio, moneda) * l.cantidad : 0),
+      0,
+    );
   }
 
-  #cambiarMoneda(m) {
-    if (!(m in MONEDAS) || m === this.#moneda) return;
+  #cambiarMoneda(productoId, m) {
+    if (!(m in MONEDAS)) return;
+    const linea = this.#lineas.find((l) => l.productoId === productoId);
+    if (!linea || linea.moneda === m) return;
+    linea.moneda = m;
     this.#moneda = m;
-    monedaGuardada.escribir(m);
-    this.#avisar(`Pagarás en ${MONEDAS[m].nombre.toLowerCase()}.`);
+    this.#avisar(`«${linea.nombre}» se mostrará en ${MONEDAS[m].nombre.toLowerCase()}.`);
   }
 
   #unidades() {
@@ -279,11 +296,16 @@ class UcjcCompra extends HTMLElement {
       lineas: this.#lineas.map(({ productoId, nombre, precio, cantidad }) => ({ productoId, nombre, precio, cantidad })),
     };
     // Lo que el usuario paga de verdad, en su moneda (para el resumen y para el @2).
-    const moneda = this.#moneda;
     const pagado = {
-      moneda,
-      total: deCent(this.#totalMonedaCent(moneda)),
-      lineas: detail.lineas.map((l) => ({ ...l, precio: deCent(enMoneda(l.precio, moneda)) })),
+      lineas: this.#lineas.map((l) => ({
+        ...l,
+        precio: deCent(enMoneda(l.precio, l.moneda)),
+      })),
+      totales: Object.fromEntries(
+        Object.keys(MONEDAS)
+          .map((moneda) => [moneda, this.#totalMonedaCent(moneda)])
+          .filter(([, total]) => total > 0),
+      ),
     };
     // Se vacía ANTES de emitir: un doble clic no puede mandar el mismo pedido dos veces.
     this.#lineas = [];
@@ -295,10 +317,10 @@ class UcjcCompra extends HTMLElement {
     if (EMITIR_PEDIDO_V2) {
       const { pedidoId, usuarioId, creadoEn } = detail;
       window.dispatchEvent(new CustomEvent(EVT_PED_V2, {
-        detail: { pedidoId, usuarioId, creadoEn, moneda, total: pagado.total, lineas: pagado.lineas },
+        detail: { pedidoId, usuarioId, creadoEn, moneda: 'EUR', total: detail.total, lineas: detail.lineas },
       }));
     }
-    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${importe(aCent(pagado.total), moneda)})`);
+    this.#avisar(`Pedido ${detail.pedidoId} confirmado`);
   }
 
   #cambiar(productoId, delta) {
@@ -365,15 +387,24 @@ class UcjcCompra extends HTMLElement {
     const hay = this.#lineas.length > 0;
     const unidades = this.#unidades();
     const u = this.#usuario;
-    const mon = this.#moneda;
 
     const filas = hay
       ? this.#lineas
           .map((l) => {
             const n = esc(l.nombre);
             const id = esc(l.productoId);
+            const mon = l.moneda;
             return `<tr>
-              <td>${n}<span class="ud">${importe(enMoneda(l.precio, mon), mon)} / ud.</span></td>
+              <td>
+                ${n}
+                <span class="ud">${importe(enMoneda(l.precio, mon), mon)} / ud.</span>
+                <label class="selector-moneda">
+                  <span>Moneda:</span>
+                  <select data-moneda data-producto-id="${id}" aria-label="Moneda para ${n}">
+                    ${Object.entries(MONEDAS).map(([c, m]) => `<option value="${c}" ${c === mon ? 'selected' : ''}>${m.nombre} (${m.simbolo})</option>`).join('')}
+                  </select>
+                </label>
+              </td>
               <td class="r"><span class="cant">
                 <button type="button" data-menos="${id}" aria-label="Quitar una unidad de ${n}">−</button>
                 <output aria-label="Cantidad de ${n}">${l.cantidad}</output>
@@ -386,14 +417,35 @@ class UcjcCompra extends HTMLElement {
           .join('')
       : '<tr><td colspan="4" class="vacio">Tu carrito está vacío. Añade productos desde el catálogo.</td></tr>';
 
+    const totalesHTML = hay
+      ? Object.keys(MONEDAS)
+          .map((moneda) => ({
+            moneda,
+            total: this.#totalMonedaCent(moneda),
+          }))
+          .filter((dato) => dato.total > 0)
+          .map((dato) => `
+            <p class="total">
+              <small>Total en ${MONEDAS[dato.moneda].nombre}</small>
+              <b>${importe(dato.total, dato.moneda)}</b>
+            </p>
+          `)
+          .join('')
+      : `<p class="total"><small>Total</small><b>${importe(0, 'EUR')}</b></p>`;
+
     const p = this.#ultimoPedido;
     const resumen = p
       ? `<section class="resumen" aria-label="Último pedido confirmado">
           <h3>✅ Pedido confirmado</h3>
           <p><b>${esc(p.pedidoId)}</b> · ${hora(p.creadoEn)} · ${esc(u?.email || p.usuarioId)}</p>
-          <ul>${p.pagado.lineas.map((l) => `<li>${l.cantidad} × ${esc(l.nombre)} — ${importe(aCent(l.precio) * l.cantidad, p.pagado.moneda)}</li>`).join('')}</ul>
-          <p class="total"><span>Total pagado</span><b>${importe(aCent(p.pagado.total), p.pagado.moneda)}</b></p>
-          ${p.pagado.moneda === 'EUR' ? '' : `<p><small>Equivale a ${euros(p.total)}.</small></p>`}
+          <ul>${p.pagado.lineas.map((l) => `<li>${l.cantidad} × ${esc(l.nombre)} — ${importe(aCent(l.precio) * l.cantidad, l.moneda)}</li>`).join('')}</ul>
+          ${Object.entries(p.pagado.totales).map(([moneda, total]) => `
+            <p class="total">
+              <span>Total en ${MONEDAS[moneda].nombre}</span>
+              <b>${importe(total, moneda)}</b>
+            </p>
+          `).join('')}
+          ${p.pagado.lineas.some((l) => l.moneda !== 'EUR') ? `<p><small>Total equivalente en euros: ${euros(p.total)}.</small></p>` : ''}
         </section>`
       : '';
 
@@ -411,20 +463,14 @@ class UcjcCompra extends HTMLElement {
         </ol>
         <h2>Carrito</h2>
         <p class="sub">Revisa los productos antes de confirmar el pedido. El carrito se guarda aunque recargues la página.</p>
-        <div class="moneda">
-          <label for="moneda">Pagar en</label>
-          <select id="moneda" data-moneda>
-            ${Object.entries(MONEDAS).map(([c, m]) => `<option value="${c}" ${c === mon ? 'selected' : ''}>${m.nombre} (${m.simbolo})</option>`).join('')}
-          </select>
-          ${mon === 'EUR' ? '' : `<small>1 € = ${String(MONEDAS[mon].tasa).replace('.', ',')} ${MONEDAS[mon].simbolo} · tipo de referencia BCE del ${FECHA_TIPOS}, sin comisión</small>`}
-        </div>
         <div class="box">
           <div class="lista"><table>
             <tr class="cabecera"><th>Producto</th><th class="r">Cantidad</th><th class="r">Precio</th><th><span hidden>Acciones</span></th></tr>
             ${filas}
           </table></div>
-          <p class="total"><small>${unidades} artículo${unidades === 1 ? '' : 's'}</small><b>Total: <span data-total>${importe(this.#totalMonedaCent(), mon)}</span></b></p>
-          ${mon !== 'EUR' && hay ? `<p class="sub" data-equivale>Equivale a ${euros(deCent(this.#totalCent()))}</p>` : ''}
+          <div class="totales">
+            ${totalesHTML}
+          </div>
           <div class="row">
             <button type="button" data-a="vaciar" ${hay ? '' : 'disabled'}>Vaciar</button>
             <button type="button" data-a="ok" class="main" ${motivo ? 'disabled aria-describedby="motivo"' : ''}>Confirmar pedido</button>
