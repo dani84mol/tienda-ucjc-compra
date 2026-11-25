@@ -1,54 +1,31 @@
-
-// Compra C: parte de Compra B (que a su vez parte de Compra A) y la mejora.
-// Misma etiqueta <ucjc-compra> y los MISMOS tres contratos @1 firmados, sin añadir ni quitar campos:
-//   escucha  ucjc:descubrimiento:anadir-al-carrito@1  { productoId, nombre, precio, cantidad }
-//   escucha  ucjc:identidad:sesion-cambiada@1         { autenticado, usuario: { id, email, nombre? } | null }
-//   emite    ucjc:compra:pedido-confirmado@1          { pedidoId, usuarioId, creadoEn, total, lineas[] }
-// Todo lo demás (guardar el carrito, deshacer, resumen…) es interno a la pieza.
-
 const EVT_ADD = 'ucjc:descubrimiento:anadir-al-carrito@1';
 const EVT_SES = 'ucjc:identidad:sesion-cambiada@1';
 const EVT_PED = 'ucjc:compra:pedido-confirmado@1';
 const EVT_PED_V2 = 'ucjc:compra:pedido-confirmado@2';
 
-// pedido-confirmado@2 (con «moneda») está PROPUESTO, no firmado. El contrato dice:
-// «Mientras esté propuesto, Compra sigue emitiendo el @1». Cuando se firme, poner true.
 export const EMITIR_PEDIDO_V2 = false;
 
 const CLAVE_GUARDADO = 'ucjc-compra:carrito';
-const CLAVE_MONEDA = 'ucjc-compra:moneda';
 const MAX_POR_LINEA = 99;
 
-// ---------- Monedas ----------
-// Los precios llegan siempre en euros (anadir-al-carrito@1). Se convierten con el tipo de cambio
-// de referencia del BCE, sin comisión ni recargo: pagar en otra moneda no sale más caro.
-// Fuente: Banque de France, paridades diarias del 16/11/2026.
 export const MONEDAS = {
   EUR: { simbolo: '€', nombre: 'Euros', tasa: 1 },
   USD: { simbolo: '$', nombre: 'Dólares', tasa: 1.1014 },
   GBP: { simbolo: '£', nombre: 'Libras', tasa: 0.8345 },
 };
-const FECHA_TIPOS = '16/11/2026';
 
-// ---------- Utilidades ----------
-// Los importes se calculan en céntimos (enteros) para evitar errores como 0.1 + 0.2 = 0.30000000000000004
 const aCent = (euros) => Math.round(euros * 100);
 const deCent = (cent) => cent / 100;
 const euros = (n) => `${n.toFixed(2).replace('.', ',')} €`;
-// Precio unitario en euros → céntimos de la moneda elegida.
-// Se redondea SIEMPRE hacia abajo: así la suma nunca supera la conversión exacta del total
-// (redondeando al más cercano, 47,48 € salían 52,30 $ en vez de 52,29 $: 1 céntimo de más).
-// El 1e-9 evita que un 2201,9999999 por coma flotante se quede en 2201.
+
 const enMoneda = (precioEur, moneda) => Math.floor(aCent(precioEur) * MONEDAS[moneda].tasa + 1e-9);
 const importe = (cent, moneda) => `${deCent(cent).toFixed(2).replace('.', ',')} ${MONEDAS[moneda].simbolo}`;
 
-// Todo lo que viene de otra pieza se escapa antes de meterlo en innerHTML.
 const esc = (t) =>
   String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 const hora = (iso) => new Date(iso).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
 
-// Id de pedido legible y único: PED-20261123-7F3A9C
 function nuevoPedidoId() {
   const fecha = new Date().toISOString().slice(0, 10).replaceAll('-', '');
   const azar = (globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2))
@@ -58,7 +35,6 @@ function nuevoPedidoId() {
   return `PED-${fecha}-${azar}`;
 }
 
-// Valida el detail de anadir-al-carrito@1. Devuelve la línea limpia o null si no cumple el contrato.
 function lineaValida(d, permitirMoneda = false) {
   if (!d || typeof d !== 'object') return null;
   const productoId = d.productoId == null ? '' : String(d.productoId).trim();
@@ -76,26 +52,6 @@ function lineaValida(d, permitirMoneda = false) {
   return { productoId, nombre, precio, cantidad, moneda };
 }
 
-// Moneda elegida (se recuerda entre visitas). Si no hay nada guardado, euros.
-const monedaGuardada = {
-  leer() {
-    try {
-      const m = localStorage.getItem(CLAVE_MONEDA);
-      return m in MONEDAS ? m : 'EUR';
-    } catch {
-      return 'EUR';
-    }
-  },
-  escribir(m) {
-    try {
-      localStorage.setItem(CLAVE_MONEDA, m);
-    } catch {
-      /* sin almacenamiento */
-    }
-  },
-};
-
-// localStorage puede no existir o fallar (modo privado, iframes…): nunca debe romper la pieza.
 const guardado = {
   leer() {
     try {
@@ -108,9 +64,7 @@ const guardado = {
   escribir(lineas) {
     try {
       localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(lineas));
-    } catch {
-      /* sin almacenamiento: el carrito vive solo en memoria */
-    }
+    } catch {}
   },
 };
 
@@ -129,9 +83,9 @@ const css = `
   h2 { font-size:20px; margin:0 0 4px; }
   .sub { margin:0 0 16px; color:#52606d; font-size:14px; }
   .box { background:#fff; border:1px solid #cbd2d9; border-radius:10px; padding:16px; }
-  .lista { max-height:280px; overflow-y:auto; border-bottom:1px solid #eee; }
+  .lista { max-height:320px; overflow-y:auto; border-bottom:1px solid #eee; }
   table { width:100%; border-collapse:collapse; }
-  th { position:sticky; top:0; background:#fff; text-align:left; font-size:13px; color:#52606d; border-bottom:1px solid #d5d9e0; padding:6px 4px; }
+  th { position:sticky; top:0; background:#fff; text-align:left; font-size:13px; color:#52606d; border-bottom:1px solid #d5d9e0; padding:6px 4px; z-index:1; }
   td { padding:8px 4px; border-bottom:1px solid #eee; vertical-align:middle; }
   .r { text-align:right; }
   .ud { display:block; font-size:12px; color:#616e7c; }
@@ -159,14 +113,10 @@ const css = `
   .resumen p { margin:0 0 8px; font-size:14px; color:#3e4c59; }
   .resumen ul { margin:0 0 8px; padding-left:1.1rem; font-size:14px; }
   .resumen .total { font-size:16px; margin:0; }
-  .moneda { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:0 0 12px; font-size:14px; }
-  .moneda select { font:inherit; padding:6px 10px; border:1px solid #c4c4c4; border-radius:8px; background:#fff; }
-  .moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
   .selector-moneda { display:flex; align-items:center; gap:5px; margin-top:5px; font-size:12px; color:#52606d; }
   .selector-moneda select { font:inherit; font-size:12px; padding:3px 6px; border:1px solid #c4c4c4; border-radius:6px; background:#fff; color:#1f2933; }
   .selector-moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
 
-  /* Móvil: cada línea del carrito pasa a ser una tarjeta */
   @media (max-width: 520px) {
     header { padding:12px 16px; }
     table, tbody, tr, td { display:block; width:100%; }
@@ -181,17 +131,15 @@ const css = `
 
 class UcjcCompra extends HTMLElement {
   #lineas = guardado.leer();
-  #usuario = null; // { id, email, nombre? } de Identidad
+  #usuario = null;
   #flash = { texto: '', tipo: 'ok' };
-  #deshacer = null; // líneas que había antes de «Vaciar»
-  #ultimoPedido = null; // resumen del último pedido confirmado (solo para mostrar)
-  #moneda = monedaGuardada.leer(); // 'EUR' | 'USD' | 'GBP'
+  #deshacer = null;
+  #ultimoPedido = null;
 
   get #usuarioId() {
     return this.#usuario?.id ?? null;
   }
 
-  // ---------- Escucha: anadir-al-carrito@1 ----------
   #onAdd = (e) => {
     const nueva = lineaValida(e.detail);
     if (!nueva) {
@@ -213,13 +161,11 @@ class UcjcCompra extends HTMLElement {
     );
   };
 
-  // ---------- Escucha: sesion-cambiada@1 ----------
   #onSes = (e) => {
     const d = e.detail || {};
     const antes = this.#usuarioId;
     const u = d.autenticado === true && d.usuario && d.usuario.id != null ? d.usuario : null;
     this.#usuario = u ? { id: String(u.id), email: u.email ?? '', nombre: u.nombre ?? '' } : null;
-    // Al cambiar de usuario no se deja a la vista nada del anterior.
     if (antes !== this.#usuarioId) {
       this.#flash = { texto: '', tipo: 'ok' };
       this.#ultimoPedido = null;
@@ -228,10 +174,8 @@ class UcjcCompra extends HTMLElement {
   };
 
   connectedCallback() {
-    // El shell puede quitar y volver a poner el elemento: attachShadow solo una vez.
     if (!this.shadowRoot) {
       this.attachShadow({ mode: 'open' });
-      // Un solo listener para todos los botones (no se pierde al repintar).
       this.shadowRoot.addEventListener('click', (e) => this.#clic(e));
       this.shadowRoot.addEventListener('change', (e) => {
         if (e.target.matches('select[data-moneda]')) {
@@ -249,15 +193,11 @@ class UcjcCompra extends HTMLElement {
     window.removeEventListener(EVT_SES, this.#onSes);
   }
 
-  // ---------- Cálculos ----------
-  // Total en céntimos de EURO (lo que manda el contrato @1).
   #totalCent() {
     return this.#lineas.reduce((s, l) => s + aCent(l.precio) * l.cantidad, 0);
   }
 
-  // Total en céntimos de la moneda elegida: suma de las líneas ya convertidas,
-  // así el total cuadra siempre con lo que se ve en cada línea.
-  #totalMonedaCent(moneda = this.#moneda) {
+  #totalMonedaCent(moneda) {
     return this.#lineas.reduce(
       (s, l) => s + (l.moneda === moneda ? enMoneda(l.precio, moneda) * l.cantidad : 0),
       0,
@@ -269,7 +209,6 @@ class UcjcCompra extends HTMLElement {
     const linea = this.#lineas.find((l) => l.productoId === productoId);
     if (!linea || linea.moneda === m) return;
     linea.moneda = m;
-    this.#moneda = m;
     this.#avisar(`«${linea.nombre}» se mostrará en ${MONEDAS[m].nombre.toLowerCase()}.`);
   }
 
@@ -277,17 +216,14 @@ class UcjcCompra extends HTMLElement {
     return this.#lineas.reduce((s, l) => s + l.cantidad, 0);
   }
 
-  // Por qué no se puede confirmar (null si se puede).
   #motivo() {
     if (!this.#lineas.length) return 'El carrito está vacío: añade un producto del catálogo para poder confirmar.';
     if (!this.#usuarioId) return 'Inicia sesión en Identidad para confirmar el pedido.';
     return null;
   }
 
-  // ---------- Emite: pedido-confirmado@1 ----------
   #confirmar() {
     if (this.#motivo()) return;
-    // Exactamente los campos del contrato @1, ni uno más.
     const detail = {
       pedidoId: nuevoPedidoId(),
       usuarioId: this.#usuarioId,
@@ -295,7 +231,6 @@ class UcjcCompra extends HTMLElement {
       total: deCent(this.#totalCent()),
       lineas: this.#lineas.map(({ productoId, nombre, precio, cantidad }) => ({ productoId, nombre, precio, cantidad })),
     };
-    // Lo que el usuario paga de verdad, en su moneda (para el resumen y para el @2).
     const pagado = {
       lineas: this.#lineas.map((l) => ({
         ...l,
@@ -307,13 +242,10 @@ class UcjcCompra extends HTMLElement {
           .filter(([, total]) => total > 0),
       ),
     };
-    // Se vacía ANTES de emitir: un doble clic no puede mandar el mismo pedido dos veces.
     this.#lineas = [];
     this.#deshacer = null;
     this.#ultimoPedido = { ...detail, pagado };
-    // @1 firmado: siempre en euros y con sus 5 campos exactos.
     window.dispatchEvent(new CustomEvent(EVT_PED, { detail }));
-    // @2 (propuesto): mismo pedido en la moneda elegida. Apagado hasta que se firme.
     if (EMITIR_PEDIDO_V2) {
       const { pedidoId, usuarioId, creadoEn } = detail;
       window.dispatchEvent(new CustomEvent(EVT_PED_V2, {
@@ -370,16 +302,17 @@ class UcjcCompra extends HTMLElement {
     else if (b.dataset.quitar) this.#cambiar(b.dataset.quitar, -Infinity);
   }
 
-  // ---------- Pintar ----------
   #pintar() {
     const r = this.shadowRoot;
     if (!r) return;
 
-    // Al repintar se pierde el foco: se recuerda qué botón lo tenía para devolvérselo.
     const activo = r.activeElement;
     const claveFoco = activo?.dataset
       ? Object.entries(activo.dataset)
-          .map(([k, v]) => `[data-${k}="${String(v).replace(/["\\]/g, '\\$&')}"]`)
+          .map(([k, v]) => {
+            const attr = k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+            return `[data-${attr}="${String(v).replace(/["\\]/g, '\\$&')}"]`;
+          })
           .join('')
       : '';
 
