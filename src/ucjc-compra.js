@@ -1,25 +1,42 @@
+// Compra C · <ucjc-compra>
+// Cumple presentacion-campus@1: colores, tipografía, radios y espacios salen de --ucjc-* (con valor
+// de reserva), sin la marca «important», y todo listener puesto en window se quita en disconnectedCallback.
+//
+// Eventos:
+//   escucha  ucjc:descubrimiento:anadir-al-carrito@1   (firmado)   { productoId, nombre, precio (€), cantidad }
+//   escucha  ucjc:identidad:sesion-cambiada@1          (firmado)   { autenticado, usuario | null }
+//   escucha  ucjc:descubrimiento:campana-cambiada@1    (firmado)   { activa, codigo, etiqueta, momento }
+//   escucha  ucjc:descubrimiento:moneda-cambiada@1     (propuesto) { moneda, momento }
+//   emite    ucjc:compra:pedido-confirmado@1           (firmado)   { pedidoId, usuarioId, creadoEn, total, lineas[] }  · en euros
+//   emite    ucjc:compra:pedido-confirmado@2           (propuesto) apagado con EMITIR_PEDIDO_V2
+
 const EVT_ADD = 'ucjc:descubrimiento:anadir-al-carrito@1';
 const EVT_SES = 'ucjc:identidad:sesion-cambiada@1';
+const EVT_CAMPANA = 'ucjc:descubrimiento:campana-cambiada@1';
+const EVT_MONEDA = 'ucjc:descubrimiento:moneda-cambiada@1';
 const EVT_PED = 'ucjc:compra:pedido-confirmado@1';
 const EVT_PED_V2 = 'ucjc:compra:pedido-confirmado@2';
 
+// pedido-confirmado@2 sigue PROPUESTO: «Mientras esté propuesto, Compra sigue emitiendo el @1».
 export const EMITIR_PEDIDO_V2 = false;
 
 const CLAVE_GUARDADO = 'ucjc-compra:carrito';
 const MAX_POR_LINEA = 99;
 
+// La moneda NO se elige en Compra: la marca el catálogo con moneda-cambiada@1.
+// El precio llega siempre en euros (anadir-al-carrito@1); para enseñarlo en la moneda del catálogo
+// se convierte con el tipo de referencia del BCE (16/11/2026), redondeando hacia abajo: nunca de más.
 export const MONEDAS = {
-  EUR: { simbolo: '€', nombre: 'Euros', tasa: 1 },
-  USD: { simbolo: '$', nombre: 'Dólares', tasa: 1.1014 },
-  GBP: { simbolo: '£', nombre: 'Libras', tasa: 0.8345 },
+  EUR: { simbolo: '€', nombre: 'euros', tasa: 1 },
+  USD: { simbolo: '$', nombre: 'dólares', tasa: 1.1014 },
+  GBP: { simbolo: '£', nombre: 'libras', tasa: 0.8345 },
 };
 
+// ---------- Utilidades ----------
 const aCent = (euros) => Math.round(euros * 100);
 const deCent = (cent) => cent / 100;
-const euros = (n) => `${n.toFixed(2).replace('.', ',')} €`;
-
 const enMoneda = (precioEur, moneda) => Math.floor(aCent(precioEur) * MONEDAS[moneda].tasa + 1e-9);
-const importe = (cent, moneda) => `${deCent(cent).toFixed(2).replace('.', ',')} ${MONEDAS[moneda].simbolo}`;
+const importe = (cent, moneda = 'EUR') => `${deCent(cent).toFixed(2).replace('.', ',')} ${MONEDAS[moneda].simbolo}`;
 
 const esc = (t) =>
   String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -35,7 +52,30 @@ function nuevoPedidoId() {
   return `PED-${fecha}-${azar}`;
 }
 
-function lineaValida(d, permitirMoneda = false) {
+// ---------- Campus (presentacion-campus@1) ----------
+// Fuera de la tienda (página de demo, tests) no hay ucjcCampus: se usa window directamente.
+const campus = () => (globalThis.window?.ucjcCampus?.version === '1' ? window.ucjcCampus : null);
+
+function escuchar(nombre, manejador) {
+  const c = campus();
+  if (c) return c.escuchar(nombre, manejador);
+  window.addEventListener(nombre, manejador);
+  return () => window.removeEventListener(nombre, manejador);
+}
+
+function emitir(nombre, detail) {
+  const c = campus();
+  if (c) c.emitir(nombre, detail);
+  else window.dispatchEvent(new CustomEvent(nombre, { detail }));
+}
+
+// ---------- Líneas del carrito ----------
+// Una línea = producto + moneda + campaña. Si cambia cualquiera de las tres, es otra línea:
+// el mismo producto en Black Friday o en dólares no tiene el mismo precio.
+const claveLinea = (l) => `${l.productoId}|${l.moneda}|${l.campana ?? ''}`;
+
+// Valida el detail de anadir-al-carrito@1 (solo sus 4 campos).
+function productoValido(d) {
   if (!d || typeof d !== 'object') return null;
   const productoId = d.productoId == null ? '' : String(d.productoId).trim();
   const nombre = typeof d.nombre === 'string' ? d.nombre.trim() : '';
@@ -44,19 +84,24 @@ function lineaValida(d, permitirMoneda = false) {
   if (!productoId || !nombre) return null;
   if (!Number.isFinite(precio) || precio < 0) return null;
   if (!Number.isInteger(cantidad) || cantidad < 1) return null;
+  return { productoId, nombre, precio, cantidad };
+}
 
-  const moneda = permitirMoneda && typeof d.moneda === 'string' && d.moneda in MONEDAS
-    ? d.moneda
-    : 'EUR';
-
-  return { productoId, nombre, precio, cantidad, moneda };
+// Valida una línea guardada (producto + moneda + campaña).
+function lineaGuardada(d) {
+  const p = productoValido(d);
+  if (!p) return null;
+  const moneda = d.moneda in MONEDAS ? d.moneda : 'EUR';
+  const campana = typeof d.campana === 'string' && d.campana ? d.campana : null;
+  const etiqueta = campana && typeof d.etiqueta === 'string' && d.etiqueta ? d.etiqueta : campana;
+  return { ...p, moneda, campana, etiqueta };
 }
 
 const guardado = {
   leer() {
     try {
       const datos = JSON.parse(localStorage.getItem(CLAVE_GUARDADO) || '[]');
-      return Array.isArray(datos) ? datos.map((d) => lineaValida(d, true)).filter(Boolean) : [];
+      return Array.isArray(datos) ? datos.map(lineaGuardada).filter(Boolean) : [];
     } catch {
       return [];
     }
@@ -64,103 +109,188 @@ const guardado = {
   escribir(lineas) {
     try {
       localStorage.setItem(CLAVE_GUARDADO, JSON.stringify(lineas));
-    } catch {}
+    } catch {
+      /* sin almacenamiento: el carrito vive solo en memoria */
+    }
   },
 };
 
+// ---------- Estilos: solo tokens --ucjc-* (el color a mano solo aparece como reserva) ----------
 const css = `
-  :host { display:block; font:16px/1.5 system-ui, Arial, sans-serif; color:#1f2933; }
-  * { box-sizing:border-box; }
-  header { background:#1f3a63; color:#fff; padding:14px 24px; display:flex; justify-content:space-between; align-items:center; gap:.75rem; flex-wrap:wrap; }
-  header h1 { margin:0; font-size:20px; display:flex; align-items:center; gap:.5rem; }
-  .contador { font-size:13px; font-weight:700; background:#fff; color:#1f3a63; border-radius:999px; padding:1px 9px; }
-  .chip { font-size:13px; padding:3px 10px; border-radius:999px; background:#e3f1e7; color:#14532d; font-weight:700; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .chip.sin { background:#ffe7c2; color:#6b3d00; }
-  main { max-width:680px; margin:24px auto; padding:0 16px; }
-  ol.pasos { display:flex; gap:6px; list-style:none; padding:0; margin:0 0 14px; font-size:13px; }
-  ol.pasos li { flex:1; text-align:center; padding:4px; border-radius:6px; background:#eef1f6; color:#52606d; }
-  ol.pasos li.hecho { background:#1f3a63; color:#fff; font-weight:700; }
-  h2 { font-size:20px; margin:0 0 4px; }
-  .sub { margin:0 0 16px; color:#52606d; font-size:14px; }
-  .box { background:#fff; border:1px solid #cbd2d9; border-radius:10px; padding:16px; }
-  .lista { max-height:320px; overflow-y:auto; border-bottom:1px solid #eee; }
-  table { width:100%; border-collapse:collapse; }
-  th { position:sticky; top:0; background:#fff; text-align:left; font-size:13px; color:#52606d; border-bottom:1px solid #d5d9e0; padding:6px 4px; z-index:1; }
-  td { padding:8px 4px; border-bottom:1px solid #eee; vertical-align:middle; }
-  .r { text-align:right; }
-  .ud { display:block; font-size:12px; color:#616e7c; }
-  .cant { display:inline-flex; align-items:center; gap:6px; }
-  .cant output { min-width:1.5em; text-align:center; font-variant-numeric:tabular-nums; }
-  .cant button { width:32px; height:32px; padding:0; border-radius:50%; font-size:17px; line-height:1; }
-  .quitar { padding:3px 9px; font-size:13px; }
-  .vacio { color:#52606d; font-style:italic; text-align:center; padding:18px 4px; }
-  .total { display:flex; justify-content:space-between; align-items:baseline; font-size:18px; margin:14px 0; }
-  .total small { font-size:14px; color:#52606d; }
-  .totales { margin:14px 0; }
-  .totales .total { margin:6px 0; }
-  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-  button { font:inherit; font-size:15px; padding:8px 16px; border:1px solid #c4c4c4; border-radius:8px; background:#ececec; color:#1f2933; cursor:pointer; }
-  button:hover:not(:disabled) { filter:brightness(.95); }
-  button.main { background:#1f3a63; color:#fff; border-color:#1f3a63; margin-left:auto; }
-  button.enlace { background:none; border:none; padding:0 4px; color:#1f3a63; text-decoration:underline; font-weight:700; }
-  button:disabled { background:#e6e6e6; color:#6b6b6b; border-color:#d0d0d0; cursor:not-allowed; }
-  button:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
-  .motivo { margin:10px 0 0; font-size:14px; color:#6b3d00; text-align:right; }
-  .ok { margin:12px 0 0; font-size:14px; color:#1d6b2f; min-height:1.2em; }
-  .ok.aviso { color:#6b3d00; }
-  .resumen { margin-top:16px; border:1px solid #b7dfc3; background:#f0faf3; border-radius:10px; padding:14px 16px; }
-  .resumen h3 { margin:0 0 6px; font-size:16px; color:#14532d; }
-  .resumen p { margin:0 0 8px; font-size:14px; color:#3e4c59; }
-  .resumen ul { margin:0 0 8px; padding-left:1.1rem; font-size:14px; }
-  .resumen .total { font-size:16px; margin:0; }
-  .selector-moneda { display:flex; align-items:center; gap:5px; margin-top:5px; font-size:12px; color:#52606d; }
-  .selector-moneda select { font:inherit; font-size:12px; padding:3px 6px; border:1px solid #c4c4c4; border-radius:6px; background:#fff; color:#1f2933; }
-  .selector-moneda select:focus-visible { outline:3px solid #f2a900; outline-offset:2px; }
+  :host {
+    display: block;
+    font-family: var(--ucjc-font-sans, "Segoe UI", sans-serif);
+    font-size: 1rem;
+    line-height: 1.5;
+    color: var(--ucjc-ink, #1a242c);
+  }
+  * { box-sizing: border-box; }
+
+  header {
+    background: var(--ucjc-brand, #0b3d4a);
+    color: var(--ucjc-panel, #fbfcfb);
+    padding: var(--ucjc-space, 0.75rem) var(--ucjc-space-lg, 1.25rem);
+    display: flex; justify-content: space-between; align-items: center;
+    gap: var(--ucjc-space, 0.75rem); flex-wrap: wrap;
+  }
+  header h1 {
+    margin: 0; font-size: 1.25rem;
+    font-family: var(--ucjc-font-display, Georgia, serif);
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .contador {
+    font-family: var(--ucjc-font-sans, "Segoe UI", sans-serif);
+    font-size: 0.8rem; font-weight: 700; padding: 0 0.55rem; border-radius: 999px;
+    background: var(--ucjc-panel, #fbfcfb); color: var(--ucjc-brand, #0b3d4a);
+  }
+  .chip {
+    font-size: 0.8rem; font-weight: 700; padding: 0.15rem 0.6rem; border-radius: 999px;
+    background: var(--ucjc-panel, #fbfcfb); color: var(--ucjc-leaf, #2f6f4e);
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .chip.sin { color: var(--ucjc-warn, #8a3a3a); }
+
+  .campana {
+    display: flex; align-items: center; gap: var(--ucjc-space, 0.75rem); flex-wrap: wrap;
+    padding: var(--ucjc-space, 0.75rem) var(--ucjc-space-lg, 1.25rem);
+    background: var(--ucjc-brand-bright, #146b7a); color: var(--ucjc-panel, #fbfcfb);
+    font-weight: 700;
+  }
+  .campana small { font-weight: 400; }
+
+  main { max-width: var(--ucjc-max, 72rem); margin: var(--ucjc-space-lg, 1.25rem) auto; padding: 0 var(--ucjc-space, 0.75rem); }
+  .contenido { max-width: 44rem; margin: 0 auto; }
+
+  ol.pasos { display: flex; gap: 0.4rem; list-style: none; padding: 0; margin: 0 0 var(--ucjc-space, 0.75rem); font-size: 0.8rem; }
+  ol.pasos li {
+    flex: 1; text-align: center; padding: 0.25rem; border-radius: var(--ucjc-radius, 6px);
+    background: var(--ucjc-mist, #e6ece8); color: var(--ucjc-muted, #5a6a76);
+  }
+  ol.pasos li.hecho { background: var(--ucjc-brand, #0b3d4a); color: var(--ucjc-panel, #fbfcfb); font-weight: 700; }
+
+  h2 { font-family: var(--ucjc-font-display, Georgia, serif); font-size: 1.25rem; margin: 0 0 0.25rem; }
+  .sub { margin: 0 0 var(--ucjc-space, 0.75rem); color: var(--ucjc-muted, #5a6a76); font-size: 0.9rem; }
+
+  .box {
+    background: var(--ucjc-panel, #fbfcfb);
+    border: 1px solid var(--ucjc-edge, #c9d3cd);
+    border-radius: var(--ucjc-radius, 6px);
+    padding: var(--ucjc-space-lg, 1.25rem);
+  }
+  .lista { max-height: 20rem; overflow-y: auto; border-bottom: 1px solid var(--ucjc-mist, #e6ece8); }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    position: sticky; top: 0; z-index: 1; text-align: left; font-size: 0.8rem; padding: 0.4rem 0.25rem;
+    background: var(--ucjc-panel, #fbfcfb); color: var(--ucjc-muted, #5a6a76);
+    border-bottom: 1px solid var(--ucjc-edge, #c9d3cd);
+  }
+  td { padding: 0.5rem 0.25rem; border-bottom: 1px solid var(--ucjc-mist, #e6ece8); vertical-align: middle; }
+  .r { text-align: right; }
+  .ud { display: block; font-size: 0.75rem; color: var(--ucjc-muted, #5a6a76); }
+  .etiquetas { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.2rem; }
+  .etiqueta {
+    font-size: 0.7rem; font-weight: 700; padding: 0.05rem 0.45rem; border-radius: 999px;
+    border: 1px solid var(--ucjc-edge, #c9d3cd); color: var(--ucjc-muted, #5a6a76);
+  }
+  .etiqueta.bf { background: var(--ucjc-brand-bright, #146b7a); border-color: var(--ucjc-brand-bright, #146b7a); color: var(--ucjc-panel, #fbfcfb); }
+
+  .cant { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .cant output { min-width: 1.5em; text-align: center; font-variant-numeric: tabular-nums; }
+  .cant button { width: 2rem; height: 2rem; padding: 0; border-radius: 50%; font-size: 1.05rem; line-height: 1; }
+  .quitar { padding: 0.2rem 0.55rem; font-size: 0.8rem; }
+  .vacio { color: var(--ucjc-muted, #5a6a76); font-style: italic; text-align: center; padding: var(--ucjc-space-lg, 1.25rem) 0.25rem; }
+
+  .totales { margin: var(--ucjc-space, 0.75rem) 0; }
+  .total { display: flex; justify-content: space-between; align-items: baseline; margin: 0.3rem 0; font-size: 0.95rem; }
+  .total small { color: var(--ucjc-muted, #5a6a76); font-size: 0.85rem; }
+  .total.final { font-size: 1.15rem; padding-top: 0.4rem; border-top: 1px solid var(--ucjc-mist, #e6ece8); }
+
+  .row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+  button {
+    font: inherit; font-size: 0.95rem; cursor: pointer;
+    padding: 0.5rem var(--ucjc-space, 0.75rem);
+    border: 1px solid var(--ucjc-edge, #c9d3cd); border-radius: var(--ucjc-radius, 6px);
+    background: var(--ucjc-mist, #e6ece8); color: var(--ucjc-ink, #1a242c);
+    transition: background-color 0.15s var(--ucjc-ease, ease);
+  }
+  button:hover:not(:disabled) { background: var(--ucjc-fog, #f3f6f4); }
+  button.main {
+    margin-left: auto; font-weight: 700;
+    background: var(--ucjc-brand-bright, #146b7a); border-color: var(--ucjc-brand-bright, #146b7a);
+    color: var(--ucjc-panel, #fbfcfb);
+  }
+  button.main:hover:not(:disabled) { background: var(--ucjc-brand, #0b3d4a); }
+  button.enlace { background: none; border: none; padding: 0 0.25rem; color: var(--ucjc-brand-bright, #146b7a); text-decoration: underline; font-weight: 700; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  button:focus-visible { outline: 3px solid var(--ucjc-brand-bright, #146b7a); outline-offset: 2px; }
+
+  .motivo { margin: var(--ucjc-space, 0.75rem) 0 0; font-size: 0.9rem; color: var(--ucjc-warn, #8a3a3a); text-align: right; }
+  .ok { margin: var(--ucjc-space, 0.75rem) 0 0; font-size: 0.9rem; color: var(--ucjc-leaf, #2f6f4e); min-height: 1.2em; }
+  .ok.aviso { color: var(--ucjc-warn, #8a3a3a); }
+
+  .resumen {
+    margin-top: var(--ucjc-space-lg, 1.25rem); padding: var(--ucjc-space, 0.75rem) var(--ucjc-space-lg, 1.25rem);
+    background: var(--ucjc-fog, #f3f6f4);
+    border: 1px solid var(--ucjc-leaf, #2f6f4e); border-radius: var(--ucjc-radius, 6px);
+  }
+  .resumen h3 { margin: 0 0 0.4rem; font-family: var(--ucjc-font-display, Georgia, serif); font-size: 1rem; color: var(--ucjc-leaf, #2f6f4e); }
+  .resumen p { margin: 0 0 0.5rem; font-size: 0.9rem; color: var(--ucjc-muted, #5a6a76); }
+  .resumen ul { margin: 0 0 0.5rem; padding-left: 1.1rem; font-size: 0.9rem; }
 
   @media (max-width: 520px) {
-    header { padding:12px 16px; }
-    table, tbody, tr, td { display:block; width:100%; }
-    tr.cabecera { display:none; }
-    tr { border-bottom:1px solid #eee; padding:8px 0; display:grid; grid-template-columns:1fr auto; gap:4px 8px; }
-    td { border:none; padding:2px 0; }
-    td.r { text-align:left; }
-    td.subtotal, td.acciones { text-align:right; }
-    button.main { width:100%; margin-left:0; }
+    table, tbody, tr, td { display: block; width: 100%; }
+    tr.cabecera { display: none; }
+    tr { display: grid; grid-template-columns: 1fr auto; gap: 0.25rem 0.5rem; padding: 0.5rem 0; border-bottom: 1px solid var(--ucjc-mist, #e6ece8); }
+    td { border: none; padding: 0.1rem 0; }
+    td.r { text-align: left; }
+    td.subtotal, td.acciones { text-align: right; }
+    button.main { width: 100%; margin-left: 0; }
   }
 `;
 
 class UcjcCompra extends HTMLElement {
   #lineas = guardado.leer();
-  #usuario = null;
+  #usuario = null; // { id, email, nombre? } de Identidad
+  #campana = null; // { codigo, etiqueta } mientras Descubrimiento la tenga activa
+  #moneda = 'EUR'; // moneda del catálogo (moneda-cambiada@1)
   #flash = { texto: '', tipo: 'ok' };
   #deshacer = null;
   #ultimoPedido = null;
+  #quitar = []; // funciones que dejan de escuchar (se llaman en disconnectedCallback)
 
   get #usuarioId() {
     return this.#usuario?.id ?? null;
   }
 
+  // ---------- Escucha: anadir-al-carrito@1 ----------
   #onAdd = (e) => {
-    const nueva = lineaValida(e.detail);
-    if (!nueva) {
+    const p = productoValido(e.detail);
+    if (!p) {
       console.warn(`[compra] ${EVT_ADD} con datos que no cumplen el contrato; se ignora`, e.detail);
       return;
     }
-    const existente = this.#lineas.find((l) => l.productoId === nueva.productoId);
+    // Se etiqueta con la moneda y la campaña que tenía el catálogo en ese momento.
+    const nueva = {
+      ...p,
+      moneda: this.#moneda,
+      campana: this.#campana?.codigo ?? null,
+      etiqueta: this.#campana?.etiqueta ?? null,
+    };
+    const existente = this.#lineas.find((l) => claveLinea(l) === claveLinea(nueva));
     const actual = existente ? existente.cantidad : 0;
     const total = Math.min(MAX_POR_LINEA, actual + nueva.cantidad);
     if (existente) existente.cantidad = total;
     else this.#lineas.push({ ...nueva, cantidad: total });
 
     this.#deshacer = null;
+    const tope = total < actual + nueva.cantidad;
     this.#avisar(
-      total < actual + nueva.cantidad
-        ? `Máximo ${MAX_POR_LINEA} unidades de «${nueva.nombre}»`
-        : `Añadido: ${nueva.nombre}`,
-      total < actual + nueva.cantidad ? 'aviso' : 'ok',
+      tope ? `Máximo ${MAX_POR_LINEA} unidades de «${nueva.nombre}»` : `Añadido: ${nueva.nombre}${nueva.etiqueta ? ` (${nueva.etiqueta})` : ''}`,
+      tope ? 'aviso' : 'ok',
     );
   };
 
+  // ---------- Escucha: sesion-cambiada@1 ----------
   #onSes = (e) => {
     const d = e.detail || {};
     const antes = this.#usuarioId;
@@ -173,43 +303,71 @@ class UcjcCompra extends HTMLElement {
     this.#pintar();
   };
 
+  // ---------- Escucha: campana-cambiada@1 ----------
+  #onCampana = (e) => {
+    const d = e.detail || {};
+    if (typeof d.activa !== 'boolean' || typeof d.codigo !== 'string' || !d.codigo) {
+      console.warn(`[compra] ${EVT_CAMPANA} con datos que no cumplen el contrato; se ignora`, d);
+      return;
+    }
+    const etiqueta = typeof d.etiqueta === 'string' && d.etiqueta ? d.etiqueta : d.codigo;
+    const antes = this.#campana?.codigo ?? null;
+    this.#campana = d.activa ? { codigo: d.codigo, etiqueta } : null;
+    if (antes === (this.#campana?.codigo ?? null)) {
+      this.#pintar(); // aviso repetido (p. ej. al cargar): sin mensaje
+      return;
+    }
+    this.#avisar(d.activa ? `${etiqueta} activado: lo que añadas ahora lleva su descuento.` : `${etiqueta} ha terminado.`);
+  };
+
+  // ---------- Escucha: moneda-cambiada@1 ----------
+  #onMoneda = (e) => {
+    const m = e.detail?.moneda;
+    if (!(m in MONEDAS)) {
+      console.warn(`[compra] ${EVT_MONEDA} con una moneda que no conocemos; se ignora`, e.detail);
+      return;
+    }
+    if (m === this.#moneda) return;
+    this.#moneda = m;
+    this.#pintar();
+  };
+
   connectedCallback() {
+    if (!campus()) console.warn('[compra] sin campus: se usan los valores de reserva y window.dispatchEvent');
     if (!this.shadowRoot) {
       this.attachShadow({ mode: 'open' });
+      // Este listener está en la sombra de la pieza, no en window: vive y muere con ella.
       this.shadowRoot.addEventListener('click', (e) => this.#clic(e));
-      this.shadowRoot.addEventListener('change', (e) => {
-        if (e.target.matches('select[data-moneda]')) {
-          this.#cambiarMoneda(e.target.dataset.productoId, e.target.value);
-        }
-      });
     }
-    window.addEventListener(EVT_ADD, this.#onAdd);
-    window.addEventListener(EVT_SES, this.#onSes);
+    // Lo que se pone, se quita (disconnectedCallback).
+    this.#quitar.forEach((q) => q());
+    this.#quitar = [
+      escuchar(EVT_ADD, this.#onAdd),
+      escuchar(EVT_SES, this.#onSes),
+      escuchar(EVT_CAMPANA, this.#onCampana),
+      escuchar(EVT_MONEDA, this.#onMoneda),
+    ];
     this.#pintar();
   }
 
   disconnectedCallback() {
-    window.removeEventListener(EVT_ADD, this.#onAdd);
-    window.removeEventListener(EVT_SES, this.#onSes);
+    this.#quitar.forEach((q) => q());
+    this.#quitar = [];
   }
 
-  #totalCent() {
-    return this.#lineas.reduce((s, l) => s + aCent(l.precio) * l.cantidad, 0);
+  // ---------- Cálculos ----------
+  // Total en céntimos de euro: lo que se cobra y lo que manda pedido-confirmado@1.
+  #totalCent(lineas = this.#lineas) {
+    return lineas.reduce((s, l) => s + aCent(l.precio) * l.cantidad, 0);
   }
 
-  #totalMonedaCent(moneda) {
-    return this.#lineas.reduce(
-      (s, l) => s + (l.moneda === moneda ? enMoneda(l.precio, moneda) * l.cantidad : 0),
-      0,
-    );
+  // Subtotal de las líneas de una moneda, en céntimos de esa moneda.
+  #totalEnMoneda(moneda, lineas = this.#lineas) {
+    return lineas.filter((l) => l.moneda === moneda).reduce((s, l) => s + enMoneda(l.precio, moneda) * l.cantidad, 0);
   }
 
-  #cambiarMoneda(productoId, m) {
-    if (!(m in MONEDAS)) return;
-    const linea = this.#lineas.find((l) => l.productoId === productoId);
-    if (!linea || linea.moneda === m) return;
-    linea.moneda = m;
-    this.#avisar(`«${linea.nombre}» se mostrará en ${MONEDAS[m].nombre.toLowerCase()}.`);
+  #monedasUsadas(lineas = this.#lineas) {
+    return Object.keys(MONEDAS).filter((m) => lineas.some((l) => l.moneda === m));
   }
 
   #unidades() {
@@ -222,41 +380,51 @@ class UcjcCompra extends HTMLElement {
     return null;
   }
 
+  // ---------- Emite: pedido-confirmado@1 (y @2 cuando se firme) ----------
   #confirmar() {
     if (this.#motivo()) return;
+    const lineas = this.#lineas.map((l) => ({ ...l }));
+    // @1: exactamente sus 5 campos, siempre en euros.
     const detail = {
       pedidoId: nuevoPedidoId(),
       usuarioId: this.#usuarioId,
       creadoEn: new Date().toISOString(),
-      total: deCent(this.#totalCent()),
-      lineas: this.#lineas.map(({ productoId, nombre, precio, cantidad }) => ({ productoId, nombre, precio, cantidad })),
-    };
-    const pagado = {
-      lineas: this.#lineas.map((l) => ({
-        ...l,
-        precio: deCent(enMoneda(l.precio, l.moneda)),
-      })),
-      totales: Object.fromEntries(
-        Object.keys(MONEDAS)
-          .map((moneda) => [moneda, this.#totalMonedaCent(moneda)])
-          .filter(([, total]) => total > 0),
-      ),
+      total: deCent(this.#totalCent(lineas)),
+      lineas: lineas.map(({ productoId, nombre, precio, cantidad }) => ({ productoId, nombre, precio, cantidad })),
     };
     this.#lineas = [];
     this.#deshacer = null;
-    this.#ultimoPedido = { ...detail, pagado };
-    window.dispatchEvent(new CustomEvent(EVT_PED, { detail }));
-    if (EMITIR_PEDIDO_V2) {
-      const { pedidoId, usuarioId, creadoEn } = detail;
-      window.dispatchEvent(new CustomEvent(EVT_PED_V2, {
-        detail: { pedidoId, usuarioId, creadoEn, moneda: 'EUR', total: detail.total, lineas: detail.lineas },
-      }));
-    }
-    this.#avisar(`Pedido ${detail.pedidoId} confirmado`);
+    this.#ultimoPedido = { ...detail, detalle: lineas };
+    emitir(EVT_PED, detail);
+    if (EMITIR_PEDIDO_V2) emitir(EVT_PED_V2, this.#detalleV2(detail, lineas));
+    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${importe(aCent(detail.total))})`);
   }
 
-  #cambiar(productoId, delta) {
-    const l = this.#lineas.find((x) => x.productoId === productoId);
+  // @2 lleva UNA moneda y como mucho UNA campaña para todo el pedido.
+  // Si el carrito mezcla monedas, el pedido va en euros; si mezcla campañas, sin campaña.
+  #detalleV2(detail, lineas) {
+    const monedas = this.#monedasUsadas(lineas);
+    const moneda = monedas.length === 1 ? monedas[0] : 'EUR';
+    const campanas = [...new Set(lineas.map((l) => l.campana))];
+    const v2 = {
+      pedidoId: detail.pedidoId,
+      usuarioId: detail.usuarioId,
+      creadoEn: detail.creadoEn,
+      moneda,
+      total: moneda === 'EUR' ? detail.total : deCent(this.#totalEnMoneda(moneda, lineas)),
+      lineas: lineas.map(({ productoId, nombre, precio, cantidad }) => ({
+        productoId,
+        nombre,
+        precio: moneda === 'EUR' ? precio : deCent(enMoneda(precio, moneda)),
+        cantidad,
+      })),
+    };
+    if (campanas.length === 1 && campanas[0]) v2['campaña'] = campanas[0];
+    return v2;
+  }
+
+  #cambiar(clave, delta) {
+    const l = this.#lineas.find((x) => claveLinea(x) === clave);
     if (!l) return;
     if (delta > 0 && l.cantidad >= MAX_POR_LINEA) {
       this.#avisar(`Máximo ${MAX_POR_LINEA} unidades de «${l.nombre}»`, 'aviso');
@@ -302,6 +470,14 @@ class UcjcCompra extends HTMLElement {
     else if (b.dataset.quitar) this.#cambiar(b.dataset.quitar, -Infinity);
   }
 
+  // ---------- Pintar ----------
+  #etiquetas(l) {
+    const tags = [];
+    if (l.campana) tags.push(`<span class="etiqueta bf" data-campana="${esc(l.campana)}">🏷️ ${esc(l.etiqueta || l.campana)}</span>`);
+    if (l.moneda !== 'EUR') tags.push(`<span class="etiqueta" data-moneda-linea="${l.moneda}">${l.moneda}</span>`);
+    return tags.length ? `<span class="etiquetas">${tags.join('')}</span>` : '';
+  }
+
   #pintar() {
     const r = this.shadowRoot;
     if (!r) return;
@@ -309,10 +485,7 @@ class UcjcCompra extends HTMLElement {
     const activo = r.activeElement;
     const claveFoco = activo?.dataset
       ? Object.entries(activo.dataset)
-          .map(([k, v]) => {
-            const attr = k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-            return `[data-${attr}="${String(v).replace(/["\\]/g, '\\$&')}"]`;
-          })
+          .map(([k, v]) => `[data-${k.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}="${String(v).replace(/["\\]/g, '\\$&')}"]`)
           .join('')
       : '';
 
@@ -320,65 +493,52 @@ class UcjcCompra extends HTMLElement {
     const hay = this.#lineas.length > 0;
     const unidades = this.#unidades();
     const u = this.#usuario;
+    const c = this.#campana;
 
     const filas = hay
       ? this.#lineas
           .map((l) => {
             const n = esc(l.nombre);
-            const id = esc(l.productoId);
-            const mon = l.moneda;
-            return `<tr>
-              <td>
-                ${n}
-                <span class="ud">${importe(enMoneda(l.precio, mon), mon)} / ud.</span>
-                <label class="selector-moneda">
-                  <span>Moneda:</span>
-                  <select data-moneda data-producto-id="${id}" aria-label="Moneda para ${n}">
-                    ${Object.entries(MONEDAS).map(([c, m]) => `<option value="${c}" ${c === mon ? 'selected' : ''}>${m.nombre} (${m.simbolo})</option>`).join('')}
-                  </select>
-                </label>
+            const k = esc(claveLinea(l));
+            const unidad = enMoneda(l.precio, l.moneda);
+            return `<tr data-linea="${k}">
+              <td>${n}
+                <span class="ud">${importe(unidad, l.moneda)} / ud.${l.moneda === 'EUR' ? '' : ` · ${importe(aCent(l.precio))}`}</span>
+                ${this.#etiquetas(l)}
               </td>
               <td class="r"><span class="cant">
-                <button type="button" data-menos="${id}" aria-label="Quitar una unidad de ${n}">−</button>
+                <button type="button" data-menos="${k}" aria-label="Quitar una unidad de ${n}">−</button>
                 <output aria-label="Cantidad de ${n}">${l.cantidad}</output>
-                <button type="button" data-mas="${id}" aria-label="Añadir una unidad de ${n}" ${l.cantidad >= MAX_POR_LINEA ? 'disabled' : ''}>+</button>
+                <button type="button" data-mas="${k}" aria-label="Añadir una unidad de ${n}" ${l.cantidad >= MAX_POR_LINEA ? 'disabled' : ''}>+</button>
               </span></td>
-              <td class="r subtotal">${importe(enMoneda(l.precio, mon) * l.cantidad, mon)}</td>
-              <td class="r acciones"><button type="button" class="quitar" data-quitar="${id}" aria-label="Quitar ${n} del carrito">Quitar</button></td>
+              <td class="r subtotal">${importe(unidad * l.cantidad, l.moneda)}</td>
+              <td class="r acciones"><button type="button" class="quitar" data-quitar="${k}" aria-label="Quitar ${n} del carrito">Quitar</button></td>
             </tr>`;
           })
           .join('')
       : '<tr><td colspan="4" class="vacio">Tu carrito está vacío. Añade productos desde el catálogo.</td></tr>';
 
-    const totalesHTML = hay
-      ? Object.keys(MONEDAS)
-          .map((moneda) => ({
-            moneda,
-            total: this.#totalMonedaCent(moneda),
-          }))
-          .filter((dato) => dato.total > 0)
-          .map((dato) => `
-            <p class="total">
-              <small>Total en ${MONEDAS[dato.moneda].nombre}</small>
-              <b>${importe(dato.total, dato.moneda)}</b>
-            </p>
-          `)
-          .join('')
-      : `<p class="total"><small>Total</small><b>${importe(0, 'EUR')}</b></p>`;
+    // Subtotales por moneda solo si hay algo que no está en euros; el total que se cobra, en euros.
+    const monedas = this.#monedasUsadas();
+    // Todo en una sola moneda distinta del euro → el total se da en esa moneda (y su equivalente en €).
+    const unaMoneda = monedas.length === 1 && monedas[0] !== 'EUR' ? monedas[0] : null;
+    const subtotales =
+      hay && monedas.length > 1
+        ? monedas
+            .map((m) => `<p class="total" data-subtotal="${m}"><small>Productos en ${MONEDAS[m].nombre}</small><span>${importe(this.#totalEnMoneda(m), m)}</span></p>`)
+            .join('')
+        : '';
+    const enCampana = this.#lineas.filter((l) => l.campana).reduce((s, l) => s + l.cantidad, 0);
 
     const p = this.#ultimoPedido;
     const resumen = p
       ? `<section class="resumen" aria-label="Último pedido confirmado">
           <h3>✅ Pedido confirmado</h3>
           <p><b>${esc(p.pedidoId)}</b> · ${hora(p.creadoEn)} · ${esc(u?.email || p.usuarioId)}</p>
-          <ul>${p.pagado.lineas.map((l) => `<li>${l.cantidad} × ${esc(l.nombre)} — ${importe(aCent(l.precio) * l.cantidad, l.moneda)}</li>`).join('')}</ul>
-          ${Object.entries(p.pagado.totales).map(([moneda, total]) => `
-            <p class="total">
-              <span>Total en ${MONEDAS[moneda].nombre}</span>
-              <b>${importe(total, moneda)}</b>
-            </p>
-          `).join('')}
-          ${p.pagado.lineas.some((l) => l.moneda !== 'EUR') ? `<p><small>Total equivalente en euros: ${euros(p.total)}.</small></p>` : ''}
+          <ul>${p.detalle
+            .map((l) => `<li>${l.cantidad} × ${esc(l.nombre)}${l.campana ? ` <b>(${esc(l.etiqueta || l.campana)})</b>` : ''} — ${importe(enMoneda(l.precio, l.moneda) * l.cantidad, l.moneda)}</li>`)
+            .join('')}</ul>
+          <p class="total final"><span>Total pagado</span><b>${importe(aCent(p.total))}</b></p>
         </section>`
       : '';
 
@@ -388,21 +548,27 @@ class UcjcCompra extends HTMLElement {
         <h1>UCJC Compra${unidades ? ` <span class="contador" aria-label="${unidades} artículos en el carrito">${unidades}</span>` : ''}</h1>
         <span class="chip ${u ? '' : 'sin'}" title="${u ? esc(u.email) : ''}">${u ? `Sesión: ${esc(u.nombre || u.email || u.id)}` : 'Sin sesión'}</span>
       </header>
-      <main>
+      ${c ? `<div class="campana" role="status" data-campana-activa="${esc(c.codigo)}">🏷️ ${esc(c.etiqueta)} activo <small>Los productos que añadas ahora llevan el descuento de la campaña.</small></div>` : ''}
+      <main><div class="contenido">
         <ol class="pasos" aria-label="Progreso de la compra">
           <li class="${hay ? 'hecho' : ''}">1. Carrito</li>
           <li class="${u ? 'hecho' : ''}">2. Sesión</li>
           <li class="${motivo ? '' : 'hecho'}">3. Confirmar</li>
         </ol>
         <h2>Carrito</h2>
-        <p class="sub">Revisa los productos antes de confirmar el pedido. El carrito se guarda aunque recargues la página.</p>
+        <p class="sub">Precios y moneda según el catálogo. Un mismo producto en otra moneda o en campaña aparece en una línea aparte.</p>
         <div class="box">
           <div class="lista"><table>
             <tr class="cabecera"><th>Producto</th><th class="r">Cantidad</th><th class="r">Precio</th><th><span hidden>Acciones</span></th></tr>
             ${filas}
           </table></div>
           <div class="totales">
-            ${totalesHTML}
+            ${subtotales}
+            ${enCampana ? `<p class="total" data-en-campana><small>Artículos con descuento de campaña</small><span>${enCampana}</span></p>` : ''}
+            <p class="total final"><small>${unidades} artículo${unidades === 1 ? '' : 's'}</small><b>Total a pagar: <span data-total>${
+              unaMoneda ? importe(this.#totalEnMoneda(unaMoneda), unaMoneda) : importe(this.#totalCent())
+            }</span></b></p>
+            ${unaMoneda ? `<p class="total" data-equivale><small>Equivale a</small><span>${importe(this.#totalCent())}</span></p>` : ''}
           </div>
           <div class="row">
             <button type="button" data-a="vaciar" ${hay ? '' : 'disabled'}>Vaciar</button>
@@ -414,7 +580,7 @@ class UcjcCompra extends HTMLElement {
           }</p>
         </div>
         ${resumen}
-      </main>`;
+      </div></main>`;
 
     if (claveFoco) r.querySelector(claveFoco)?.focus();
   }

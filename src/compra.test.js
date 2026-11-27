@@ -11,37 +11,31 @@ const entrar = () => emitir(SES, { autenticado: true, usuario: { id: 'u-demo', e
 const salir = () => emitir(SES, { autenticado: false, usuario: null });
 const camiseta = { productoId: 'p-1', nombre: 'Camiseta', precio: 19.99, cantidad: 1 };
 
-const NOMBRES_MONEDA = {
-  EUR: 'Euros',
-  USD: 'Dólares',
-  GBP: 'Libras',
-};
+const CAMP = 'ucjc:descubrimiento:campana-cambiada@1';
+const MON = 'ucjc:descubrimiento:moneda-cambiada@1';
+const PED2 = 'ucjc:compra:pedido-confirmado@2';
+const bf = (activa) => emitir(CAMP, { activa, codigo: 'black-friday-2026', etiqueta: 'Black Friday UCJC', momento: new Date().toISOString() });
+const moneda = (m) => emitir(MON, { moneda: m, momento: new Date().toISOString() });
+// Clave de línea: producto | moneda | campaña
+const L = (id, m = 'EUR', c = '') => `${id}|${m}|${c}`;
 
-describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
+describe('ucjc-compra · Compra C', () => {
   let el;
   const $ = (s) => el.shadowRoot.querySelector(s);
   const confirmar = () => $('[data-a="ok"]');
-  const selectorMoneda = (productoId) => $(`select[data-moneda][data-producto-id="${productoId}"]`);
-  const totalEn = (moneda) => {
-    const fila = [...el.shadowRoot.querySelectorAll('.totales .total')]
-      .find((p) => p.textContent.includes(`Total en ${NOMBRES_MONEDA[moneda]}`));
-    return fila?.querySelector('b')?.textContent ?? null;
-  };
-  const elegir = (m, productoId = 'p-1') => {
-    const sel = selectorMoneda(productoId);
-    sel.value = m;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-  };
+  const total = () => $('[data-total]').textContent;
+  const lineas = () => [...el.shadowRoot.querySelectorAll('tr[data-linea]')].map((tr) => tr.dataset.linea);
 
   beforeEach(() => {
     localStorage.clear();
+    delete window.ucjcCampus;
     document.body.innerHTML = '';
     el = document.createElement('ucjc-compra');
     document.body.appendChild(el);
   });
 
   it('exporta los metadatos de carga de Compra', () => {
-    expect(mod).toEqual({ nombre: 'compra', version: '0.2.0' });
+    expect(mod).toEqual({ nombre: 'compra', version: '0.4.0' });
     expect(customElements.get('ucjc-compra')).toBeDefined();
   });
 
@@ -62,7 +56,7 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
     emitir(ADD, camiseta);
     emitir(ADD, { ...camiseta, cantidad: 2 });
     expect(el.shadowRoot.querySelectorAll('[data-quitar]').length).toBe(1);
-    expect(totalEn('EUR')).toBe('59,97 €');
+    expect(total()).toBe('59,97 €');
   });
 
   it('confirma con el contrato pedido-confirmado@1 y el usuario de Identidad', () => {
@@ -92,10 +86,10 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
 
   it('los botones + y − cambian la cantidad y quitan la línea al llegar a 0', () => {
     emitir(ADD, camiseta);
-    $('[data-mas="p-1"]').click();
-    expect(totalEn('EUR')).toBe('39,98 €');
-    $('[data-menos="p-1"]').click();
-    $('[data-menos="p-1"]').click();
+    $(`[data-mas="${L('p-1')}"]`).click();
+    expect(total()).toBe('39,98 €');
+    $(`[data-menos="${L('p-1')}"]`).click();
+    $(`[data-menos="${L('p-1')}"]`).click();
     expect($('.vacio')).not.toBeNull();
   });
 
@@ -110,7 +104,7 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
 
   it('el botón Quitar elimina la línea entera', () => {
     emitir(ADD, { ...camiseta, cantidad: 3 });
-    $('[data-quitar="p-1"]').click();
+    $(`[data-quitar="${L('p-1')}"]`).click();
     expect($('.vacio')).not.toBeNull();
   });
 
@@ -224,7 +218,7 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
     $('[data-a="vaciar"]').click();
     expect($('.vacio')).not.toBeNull();
     $('[data-a="deshacer"]').click();
-    expect(totalEn('EUR')).toBe('19,99 €');
+    expect(total()).toBe('19,99 €');
   });
 
   it('el carrito se mantiene al recargar la página', () => {
@@ -232,14 +226,14 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
     el.remove();
     const otro = document.createElement('ucjc-compra');
     document.body.appendChild(otro);
-    expect(otro.shadowRoot.querySelector('.totales .total b').textContent).toBe('59,97 €');
+    expect(otro.shadowRoot.querySelector('[data-total]').textContent).toBe('59,97 €');
   });
 
   it('no deja pasar de 99 unidades por producto', () => {
     emitir(ADD, { ...camiseta, cantidad: 98 });
     emitir(ADD, { ...camiseta, cantidad: 5 });
     expect($('.cant output').textContent).toBe('99');
-    expect($('[data-mas="p-1"]').disabled).toBe(true);
+    expect($(`[data-mas="${L('p-1')}"]`).disabled).toBe(true);
   });
 
   it('muestra cuántos artículos hay en la cabecera', () => {
@@ -250,143 +244,212 @@ describe('ucjc-compra (Compra C, sobre el código de Compra B)', () => {
 
   it('después de pulsar + el foco sigue en el mismo botón', () => {
     emitir(ADD, camiseta);
-    $('[data-mas="p-1"]').focus();
-    $('[data-mas="p-1"]').click();
-    expect(el.shadowRoot.activeElement?.dataset.mas).toBe('p-1');
+    $(`[data-mas="${L('p-1')}"]`).focus();
+    $(`[data-mas="${L('p-1')}"]`).click();
+    expect(el.shadowRoot.activeElement?.dataset.mas).toBe(L('p-1'));
   });
-  // ---------- Pagar en otra moneda ----------
 
-  it('por defecto cada producto se muestra en euros', () => {
+  // ---------- Campaña (campana-cambiada@1, firmado) ----------
+
+  it('con Black Friday activo muestra el aviso arriba, y lo quita al terminar', () => {
+    expect($('.campana')).toBeNull();
+    bf(true);
+    expect($('.campana').textContent).toContain('Black Friday UCJC activo');
+    bf(false);
+    expect($('.campana')).toBeNull();
+  });
+
+  it('lo añadido durante la campaña lleva la etiqueta de Black Friday', () => {
+    bf(true);
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    expect($('.etiqueta.bf').textContent).toContain('Black Friday UCJC');
+    expect($('[data-en-campana]').textContent).toContain('1');
+  });
+
+  it('el mismo producto con y sin campaña son líneas distintas', () => {
     emitir(ADD, camiseta);
-    expect(selectorMoneda('p-1').value).toBe('EUR');
-    expect(totalEn('EUR')).toBe('19,99 €');
+    bf(true);
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    expect(lineas()).toEqual([L('p-1'), L('p-1', 'EUR', 'black-friday-2026')]);
+    expect(total()).toBe('51,97 €'); // 19,99 + 2 × 15,99
   });
 
-  it('en dólares y libras convierte el producto seleccionado con el tipo de cambio, sin recargo', () => {
+  it('la campaña se aplica igual a todos los productos que se añaden mientras está activa', () => {
+    bf(true);
+    emitir(ADD, camiseta);
+    emitir(ADD, { productoId: 'p-2', nombre: 'Taza', precio: 6, cantidad: 1 });
+    expect(el.shadowRoot.querySelectorAll('.etiqueta.bf').length).toBe(2);
+    bf(false);
+    emitir(ADD, { productoId: 'p-3', nombre: 'Llavero', precio: 5, cantidad: 1 });
+    expect(el.shadowRoot.querySelectorAll('.etiqueta.bf').length).toBe(2);
+  });
+
+  it('ignora una campaña mal formada', () => {
+    const avisos = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    emitir(CAMP, { activa: 'sí', codigo: 'bf' });
+    emitir(CAMP, { activa: true });
+    expect($('.campana')).toBeNull();
+    expect(avisos).toHaveBeenCalledTimes(2);
+    avisos.mockRestore();
+  });
+
+  // ---------- Moneda (moneda-cambiada@1, la marca el catálogo) ----------
+
+  it('Compra no tiene selector de moneda propio', () => {
+    emitir(ADD, camiseta);
+    expect($('select')).toBeNull();
+  });
+
+  it('por defecto todo va en euros', () => {
+    emitir(ADD, camiseta);
+    expect(lineas()).toEqual([L('p-1')]);
+    expect(total()).toBe('19,99 €');
+    expect($('.etiqueta')).toBeNull();
+  });
+
+  it('si el catálogo pasa a dólares, lo nuevo entra en dólares y en otra línea', () => {
+    emitir(ADD, camiseta);
+    moneda('USD');
+    emitir(ADD, camiseta);
+    expect(lineas()).toEqual([L('p-1'), L('p-1', 'USD')]);
+    expect($('[data-subtotal="EUR"]').textContent).toContain('19,99 €');
+    expect($('[data-subtotal="USD"]').textContent).toContain('22,01 $'); // 19,99 × 1,1014 → 22,01 (a la baja)
+    expect(total()).toBe('39,98 €'); // con monedas mezcladas se cobra en euros
+  });
+
+  it('con todo en una moneda, el total va en esa moneda y su equivalente en euros', () => {
+    moneda('GBP');
     emitir(ADD, { ...camiseta, cantidad: 2 });
-    elegir('USD');
-    expect(totalEn('USD')).toBe('44,02 $'); // 19,99 × 1,1014 = 22,0169… → 22,01 $ × 2
-    elegir('GBP');
-    expect(totalEn('GBP')).toBe('33,36 £'); // 19,99 × 0,8345 = 16,6816… → 16,68 £ × 2
+    expect(total()).toBe('33,36 £'); // 16,68 £ × 2
+    expect($('[data-equivale]').textContent).toContain('39,98 €');
   });
 
-  it('cada producto puede tener una moneda distinta sin modificar los demás', () => {
+  it('producto, moneda y campaña distintos → cuatro líneas', () => {
     emitir(ADD, camiseta);
-    emitir(ADD, { productoId: 'p-2', nombre: 'Taza', precio: 7.5, cantidad: 2 });
-
-    elegir('USD', 'p-1');
-
-    expect(selectorMoneda('p-1').value).toBe('USD');
-    expect(selectorMoneda('p-2').value).toBe('EUR');
-
-    expect(totalEn('USD')).toBe('22,01 $');
-    expect(totalEn('EUR')).toBe('15,00 €');
+    moneda('USD');
+    emitir(ADD, camiseta);
+    bf(true);
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    moneda('EUR');
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    expect(lineas()).toEqual([
+      L('p-1'),
+      L('p-1', 'USD'),
+      L('p-1', 'USD', 'black-friday-2026'),
+      L('p-1', 'EUR', 'black-friday-2026'),
+    ]);
   });
 
-  it('el total de cada moneda coincide con la suma de las líneas de esa moneda', () => {
-    emitir(ADD, { productoId: 'a', nombre: 'A', precio: 19.99, cantidad: 3 });
-    emitir(ADD, { productoId: 'b', nombre: 'B', precio: 7.5, cantidad: 1 });
-    emitir(ADD, { productoId: 'c', nombre: 'C', precio: 5, cantidad: 2 });
-
-    elegir('USD', 'a');
-    elegir('GBP', 'b');
-
-    const cent = (t) => Math.round(parseFloat(t.replace(/[^0-9,]/g, '').replace(',', '.')) * 100);
-
-    for (const moneda of ['EUR', 'USD', 'GBP']) {
-      const suma = [...el.shadowRoot.querySelectorAll('tr')]
-        .filter((tr) => tr.querySelector(`select[data-moneda][value="${moneda}"]`) ||
-          tr.querySelector(`select[data-moneda]`)?.value === moneda)
-        .reduce((s, tr) => {
-          const texto = tr.querySelector('.subtotal')?.textContent;
-          return s + (texto ? cent(texto) : 0);
-        }, 0);
-
-      if (suma > 0) {
-        expect(cent(totalEn(moneda))).toBe(suma);
-      }
-    }
+  it('ignora una moneda que no conocemos', () => {
+    const avisos = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    moneda('JPY');
+    emitir(ADD, camiseta);
+    expect(lineas()).toEqual([L('p-1')]);
+    avisos.mockRestore();
   });
 
-  it('pagando en dólares, el evento @1 sigue en euros y con sus 5 campos exactos', () => {
+  it('pagando en dólares y en campaña, el @1 sigue en euros y con sus 5 campos', () => {
     const spy = vi.fn();
     window.addEventListener(PED, spy);
     entrar();
-    emitir(ADD, camiseta);
-    elegir('USD');
+    moneda('USD');
+    bf(true);
+    emitir(ADD, { ...camiseta, precio: 15.99, cantidad: 2 });
     confirmar().click();
     const d = spy.mock.calls.at(-1)[0].detail;
-    expect(d.total).toBe(19.99);
-    expect(d.lineas[0].precio).toBe(19.99);
     expect(Object.keys(d).sort()).toEqual(['creadoEn', 'lineas', 'pedidoId', 'total', 'usuarioId']);
+    expect(d.total).toBe(31.98);
+    expect(d.lineas).toEqual([{ productoId: 'p-1', nombre: 'Camiseta', precio: 15.99, cantidad: 2 }]);
     window.removeEventListener(PED, spy);
   });
 
   it('mientras @2 esté propuesto no se emite', () => {
     const spy = vi.fn();
-    window.addEventListener('ucjc:compra:pedido-confirmado@2', spy);
+    window.addEventListener(PED2, spy);
     entrar();
+    moneda('GBP');
     emitir(ADD, camiseta);
-    elegir('GBP');
     confirmar().click();
     expect(spy).not.toHaveBeenCalled();
-    window.removeEventListener('ucjc:compra:pedido-confirmado@2', spy);
+    window.removeEventListener(PED2, spy);
   });
 
-  it('el resumen muestra lo pagado en las monedas elegidas y su equivalente en euros', () => {
+  it('el resumen del pedido marca qué productos eran de Black Friday', () => {
+    entrar();
+    bf(true);
+    emitir(ADD, { ...camiseta, precio: 15.99 });
+    confirmar().click();
+    expect($('.resumen').textContent).toContain('(Black Friday UCJC)');
+    expect($('.resumen').textContent).toContain('15,99 €');
+  });
+
+  it('la moneda y la campaña de cada línea se mantienen al recargar', () => {
+    moneda('USD');
+    bf(true);
+    emitir(ADD, camiseta);
+    el.remove();
+    const otro = document.createElement('ucjc-compra');
+    document.body.appendChild(otro);
+    expect(otro.shadowRoot.querySelector('tr[data-linea]').dataset.linea).toBe(L('p-1', 'USD', 'black-friday-2026'));
+  });
+
+  it('un carrito guardado por una versión antigua (sin moneda ni campaña) se recupera en euros', () => {
+    localStorage.setItem('ucjc-compra:carrito', JSON.stringify([{ productoId: 'p-9', nombre: 'Viejo', precio: 3, cantidad: 1 }]));
+    el.remove();
+    const otro = document.createElement('ucjc-compra');
+    document.body.appendChild(otro);
+    expect(otro.shadowRoot.querySelector('tr[data-linea]').dataset.linea).toBe(L('p-9'));
+  });
+
+  // ---------- presentacion-campus@1 ----------
+
+  it('el CSS no lleva !important y todo color escrito a mano es solo valor de reserva', () => {
+    const hoja = $('style').textContent;
+    expect(hoja.includes('!important')).toBe(false);
+    const colores = hoja.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(/g) ?? [];
+    expect(colores.length > 0).toBe(true);
+    const sueltos = hoja.match(/(?<!var\(--ucjc-[a-z-]+,\s*)(#[0-9a-fA-F]{3,8}\b|rgba?\()/g);
+    expect(sueltos).toBeNull();
+    expect(hoja.match(/font-family:(?!\s*var\(--ucjc-font-)/g)).toBeNull();
+  });
+
+  it('con ucjcCampus escucha y emite a través de él, y al quitarse deja de escuchar', () => {
+    const quitados = [];
+    const emitidos = [];
+    window.ucjcCampus = {
+      version: '1',
+      escuchar(nombre, fn) {
+        window.addEventListener(nombre, fn);
+        return () => {
+          quitados.push(nombre);
+          window.removeEventListener(nombre, fn);
+        };
+      },
+      emitir(nombre, detail) {
+        emitidos.push(nombre);
+        window.dispatchEvent(new CustomEvent(nombre, { detail }));
+      },
+    };
+    el.remove();
+    const otro = document.createElement('ucjc-compra');
+    document.body.appendChild(otro);
     entrar();
     emitir(ADD, camiseta);
-    emitir(ADD, { productoId: 'p-2', nombre: 'Taza', precio: 7.5, cantidad: 1 });
-
-    elegir('USD', 'p-1');
-    confirmar().click();
-
-    expect($('.resumen').textContent).toContain('22,01 $');
-    expect($('.resumen').textContent).toContain('7,50 €');
-    expect($('.resumen').textContent).toContain('27,49 €');
+    otro.shadowRoot.querySelector('[data-a="ok"]').click();
+    expect(emitidos).toEqual([PED]);
+    otro.remove();
+    expect(quitados.sort()).toEqual([ADD, CAMP, SES, MON].sort());
   });
 
-  it('recuerda la moneda individual de cada producto al recargar', () => {
+  it('sin ucjcCampus avisa por consola y sigue funcionando con window', () => {
+    const avisos = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    el.remove();
+    const otro = document.createElement('ucjc-compra');
+    document.body.appendChild(otro);
+    expect(avisos).toHaveBeenCalled();
     emitir(ADD, camiseta);
-    emitir(ADD, { productoId: 'p-2', nombre: 'Taza', precio: 7.5, cantidad: 1 });
-
-    elegir('GBP', 'p-1');
-    elegir('USD', 'p-2');
-
-    el.remove();
-    const otro = document.createElement('ucjc-compra');
-    document.body.appendChild(otro);
-
-    expect(otro.shadowRoot.querySelector('select[data-moneda][data-producto-id="p-1"]').value).toBe('GBP');
-    expect(otro.shadowRoot.querySelector('select[data-moneda][data-producto-id="p-2"]').value).toBe('USD');
-  });
-
-  it('los productos antiguos guardados sin moneda se recuperan en euros', () => {
-    localStorage.setItem('ucjc-compra:carrito', JSON.stringify([
-      { productoId: 'antiguo', nombre: 'Producto antiguo', precio: 10, cantidad: 2 },
-    ]));
-
-    el.remove();
-    const otro = document.createElement('ucjc-compra');
-    document.body.appendChild(otro);
-
-    expect(otro.shadowRoot.querySelector('select[data-moneda][data-producto-id="antiguo"]').value).toBe('EUR');
-    expect(otro.shadowRoot.querySelector('.totales .total b').textContent).toBe('20,00 €');
-  });
-
-  it('en otra moneda nunca se paga más que la conversión exacta del total en euros', () => {
-    const precios = [19.99, 7.5, 0.99, 45, 12.34, 3.33, 99.99, 0.1];
-    precios.forEach((precio, i) => emitir(ADD, { productoId: `x-${i}`, nombre: `X${i}`, precio, cantidad: i + 1 }));
-
-    const totalEurCent = precios.reduce((s, p, i) => s + Math.round(p * 100) * (i + 1), 0);
-    const cent = (t) => Math.round(parseFloat(t.replace(/[^0-9,]/g, '').replace(',', '.')) * 100);
-
-    for (const [moneda, tasa] of [['USD', 1.1014], ['GBP', 0.8345]]) {
-      for (let i = 0; i < precios.length; i++) {
-        elegir(moneda, `x-${i}`);
-      }
-
-      expect(cent(totalEn(moneda)) <= totalEurCent * tasa).toBe(true);
-    }
+    expect(otro.shadowRoot.querySelector('[data-total]').textContent).toBe('19,99 €');
+    avisos.mockRestore();
   });
 });

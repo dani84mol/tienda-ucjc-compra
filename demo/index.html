@@ -17,12 +17,19 @@
   <body>
     <main>
       <h1>Compra C · página propia</h1>
-      <p>Carga el mismo <code>remote.js</code> que usaría el shell. Los botones simulan a Identidad y Descubrimiento con los eventos <code>@1</code> firmados.</p>
+      <p>Carga el mismo <code>remote.js</code> que usaría el shell. Los botones simulan a Identidad y Descubrimiento: <code>sesion-cambiada@1</code>, <code>anadir-al-carrito@1</code>, <code>campana-cambiada@1</code> y <code>moneda-cambiada@1</code>.</p>
       <div class="sim" aria-label="Simular otras piezas">
         <button type="button" data-sim="entrar">Simular login (u-demo)</button>
         <button type="button" data-sim="salir">Simular logout</button>
         <button type="button" data-sim="camiseta">Añadir «Camiseta» 19,99 €</button>
         <button type="button" data-sim="taza">Añadir «Taza» 7,50 €</button>
+      </div>
+      <div class="sim" aria-label="Simular Descubrimiento">
+        <button type="button" data-sim="bfOn">Black Friday ON (camiseta a 15,99 €)</button>
+        <button type="button" data-sim="bfOff">Black Friday OFF</button>
+        <button type="button" data-sim="EUR">Catálogo en EUR</button>
+        <button type="button" data-sim="USD">Catálogo en USD</button>
+        <button type="button" data-sim="GBP">Catálogo en GBP</button>
       </div>
       <ucjc-compra></ucjc-compra>
       <section>
@@ -34,11 +41,21 @@
       const emitir = (t, detail) => window.dispatchEvent(new CustomEvent(t, { detail }));
       const SES = 'ucjc:identidad:sesion-cambiada@1';
       const ADD = 'ucjc:descubrimiento:anadir-al-carrito@1';
+      const CAMP = 'ucjc:descubrimiento:campana-cambiada@1';
+      const MON = 'ucjc:descubrimiento:moneda-cambiada@1';
+      let bf = false; // como en Descubrimiento: el precio que viaja ya lleva el descuento, en euros
+      const campana = (activa) => { bf = activa; emitir(CAMP, { activa, codigo: 'black-friday-2026', etiqueta: 'Black Friday UCJC', momento: new Date().toISOString() }); };
+      const moneda = (m) => emitir(MON, { moneda: m, momento: new Date().toISOString() });
       const sims = {
         entrar: () => emitir(SES, { autenticado: true, usuario: { id: 'u-demo', email: 'demo@alumno.ucjc.edu', nombre: 'Usuario demo' }, momento: new Date().toISOString() }),
         salir: () => emitir(SES, { autenticado: false, usuario: null, momento: new Date().toISOString() }),
-        camiseta: () => emitir(ADD, { productoId: 'prod-101', nombre: 'Camiseta', precio: 19.99, cantidad: 1 }),
-        taza: () => emitir(ADD, { productoId: 'prod-202', nombre: 'Taza', precio: 7.5, cantidad: 1 }),
+        camiseta: () => emitir(ADD, { productoId: 'prod-101', nombre: 'Camiseta', precio: bf ? 15.99 : 19.99, cantidad: 1 }),
+        taza: () => emitir(ADD, { productoId: 'prod-202', nombre: 'Taza', precio: bf ? 4.5 : 7.5, cantidad: 1 }),
+        bfOn: () => campana(true),
+        bfOff: () => campana(false),
+        EUR: () => moneda('EUR'),
+        USD: () => moneda('USD'),
+        GBP: () => moneda('GBP'),
       };
       document.querySelectorAll('[data-sim]').forEach((b) => (b.onclick = sims[b.dataset.sim]));
       const log = document.getElementById('log');

@@ -25,30 +25,32 @@ Compra C **parte del código de Compra B** (`v0.2.0`). No cambia la etiqueta ni 
 | No se sabe cuántos artículos hay sin mirar la tabla | Contador de artículos en la cabecera |
 | En móvil la tabla se aprieta | En móvil cada línea pasa a ser una tarjeta |
 
-## Pagar en euros, dólares o libras
+## Black Friday y moneda (v0.4.0)
 
-Encima del carrito hay un selector **«Pagar en»**: Euros (€), Dólares ($) o Libras (£). La elección se recuerda al volver.
+Compra **no elige moneda ni aplica descuentos**: los decide el catálogo (Descubrimiento) y Compra los refleja.
 
-- Los precios llegan siempre en euros (así lo fija `anadir-al-carrito@1`) y se convierten con el **tipo de referencia del BCE** del 16/11/2026 (1 € = 1,1014 $ = 0,8345 £), sin comisión.
-- Cada precio se redondea **hacia abajo** al céntimo: pagar en otra moneda nunca cuesta más que la conversión exacta.
-- El total es la suma de las líneas que se ven, y debajo aparece su equivalente en euros.
-- Los tipos están en `MONEDAS`, al principio de `src/ucjc-compra.js`.
+- **Campaña** (`campana-cambiada@1`): mientras está activa, arriba aparece «🏷️ Black Friday UCJC activo» y cada producto que se añade lleva la etiqueta de la campaña. El precio llega ya con el descuento, en euros.
+- **Moneda** (`moneda-cambiada@1`): lo que se añade se etiqueta con la moneda del catálogo en ese momento. El precio viaja en euros y se muestra en esa moneda con el tipo de referencia del BCE (16/11/2026: 1 € = 1,1014 $ = 0,8345 £), redondeando hacia abajo para que nunca salga más caro.
+- **Una línea = producto + moneda + campaña.** El mismo producto en otra moneda o en campaña va en una línea aparte, porque no tiene el mismo precio.
+- **Totales:** si todo está en una moneda, el total sale en esa moneda con su equivalente en euros. Si se mezclan monedas, salen los subtotales de cada una y el total a pagar en euros.
 
-**Eventos:**
-- `pedido-confirmado@1` (firmado) sigue saliendo **siempre en euros y con sus 5 campos**, pague el usuario en la moneda que pague.
-- `pedido-confirmado@2` (con `moneda`) está **propuesto**, no firmado. El código ya lo genera, pero está apagado con `EMITIR_PEDIDO_V2 = false`. Cuando se firme, se pone a `true` y saldrá con la moneda y los importes que ha pagado el usuario.
+## Eventos ([tienda-ucjc-contratos](https://github.com/cesar-andress/tienda-ucjc-contratos))
 
-## Eventos (contratos `@1` firmados en [tienda-ucjc-contratos](https://github.com/cesar-andress/tienda-ucjc-contratos))
+| Evento | Estado | Rol | Campos |
+|---|---|---|---|
+| `ucjc:descubrimiento:anadir-al-carrito@1` | firmado | escucha | `productoId`, `nombre`, `precio` (€), `cantidad` |
+| `ucjc:identidad:sesion-cambiada@1` | firmado | escucha | `autenticado`, `usuario` (`id`, `email`, `nombre?`) o `null` |
+| `ucjc:descubrimiento:campana-cambiada@1` | firmado | escucha | `activa`, `codigo`, `etiqueta`, `momento` |
+| `ucjc:descubrimiento:moneda-cambiada@1` | propuesto | escucha | `moneda`, `momento` |
+| `ucjc:compra:pedido-confirmado@1` | firmado | **emite** | `pedidoId`, `usuarioId`, `creadoEn`, `total`, `lineas[]`. Siempre en euros y con estos 5 campos exactos |
+| `ucjc:compra:pedido-confirmado@2` | propuesto | apagado | `EMITIR_PEDIDO_V2 = false`. Cuando se firme, sale con `moneda` (la del carrito, o `EUR` si hay varias) y `campaña` (si todo el pedido es de la misma) |
 
-Mismos tres eventos que A y B, **sin añadir ni quitar campos**:
+Hay un test que comprueba el `detail` de cada evento que se emite.
 
-| Evento | Rol | Campos |
-|---|---|---|
-| `ucjc:descubrimiento:anadir-al-carrito@1` | escucha | `productoId`, `nombre`, `precio`, `cantidad` |
-| `ucjc:identidad:sesion-cambiada@1` | escucha | `autenticado`, `usuario` (`id`, `email`, `nombre?`) o `null`. Solo deja confirmar si `autenticado === true` |
-| `ucjc:compra:pedido-confirmado@1` | emite | `pedidoId`, `usuarioId`, `creadoEn`, `total`, `lineas[]` (`productoId`, `nombre`, `precio`, `cantidad`), siempre en euros |
+## presentacion-campus@1
 
-Los tests comprueban que el pedido emitido lleva **exactamente** esos campos.
+- **CSS:** color, tipografía, radios y espacios salen de `var(--ucjc-*, reserva)`. Un color escrito a mano solo aparece como valor de reserva. Ni `font-family` propia ni `!important` (hay un test que lo comprueba sobre la hoja de la pieza).
+- **JS:** al arrancar se comprueba `window.ucjcCampus?.version === '1'`. Con campus se escucha con `ucjcCampus.escuchar` y se emite con `ucjcCampus.emitir`; sin campus (página de demo, tests), con `window`. Los cuatro listeners de `window` se quitan en `disconnectedCallback`.
 
 ## Equipo
 
@@ -68,7 +70,7 @@ npm test
 
 `npm run build` genera `dist/remote.js`. Al subir un tag `vX.Y.Z`, el workflow `release.yml` pasa los tests y lo publica en la rama `gh-pages` dentro de `vX.Y.Z/`.
 
-- Para el shell: `https://<usuario-u-organizacion>.github.io/tienda-ucjc-compra-c/vX.Y.Z/remote.js`
-- Página propia: `https://<usuario-u-organizacion>.github.io/tienda-ucjc-compra-c/vX.Y.Z/`
+- Para el shell: `https://dani84mol.github.io/tienda-ucjc-compra/vX.Y.Z/remote.js`
+- Página propia: `https://dani84mol.github.io/tienda-ucjc-compra/vX.Y.Z/`
 
 Un tag no se mueve nunca: si hay que corregir algo, se publica una versión nueva. Exporta `{ nombre: 'compra', version }`.
