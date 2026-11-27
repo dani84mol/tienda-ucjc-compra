@@ -25,14 +25,14 @@ Compra C **parte del código de Compra B** (`v0.2.0`). No cambia la etiqueta ni 
 | No se sabe cuántos artículos hay sin mirar la tabla | Contador de artículos en la cabecera |
 | En móvil la tabla se aprieta | En móvil cada línea pasa a ser una tarjeta |
 
-## Black Friday y moneda (v0.4.0)
+## Black Friday y moneda (v0.4.0 – v0.4.1)
 
 Compra **no elige moneda ni aplica descuentos**: los decide el catálogo (Descubrimiento) y Compra los refleja.
 
 - **Campaña** (`campana-cambiada@1`): mientras está activa, arriba aparece «🏷️ Black Friday UCJC activo» y cada producto que se añade lleva la etiqueta de la campaña. El precio llega ya con el descuento, en euros.
 - **Moneda** (`moneda-cambiada@1`): lo que se añade se etiqueta con la moneda del catálogo en ese momento. El precio viaja en euros y se muestra en esa moneda con el tipo de referencia del BCE (16/11/2026: 1 € = 1,1014 $ = 0,8345 £), redondeando hacia abajo para que nunca salga más caro.
 - **Una línea = producto + moneda + campaña.** El mismo producto en otra moneda o en campaña va en una línea aparte, porque no tiene el mismo precio.
-- **Totales:** si todo está en una moneda, el total sale en esa moneda con su equivalente en euros. Si se mezclan monedas, salen los subtotales de cada una y el total a pagar en euros.
+- **Monedas distintas no se juntan:** ni en la misma línea ni en el mismo total. Cada moneda tiene su propio «Total a pagar», y sus importes nunca se suman entre sí ni se pasan a euros en pantalla. Solo el evento `pedido-confirmado@1` va en euros, porque así lo exige su contrato.
 
 ## Eventos ([tienda-ucjc-contratos](https://github.com/cesar-andress/tienda-ucjc-contratos))
 

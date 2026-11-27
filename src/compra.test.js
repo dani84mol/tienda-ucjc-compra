@@ -35,7 +35,7 @@ describe('ucjc-compra · Compra C', () => {
   });
 
   it('exporta los metadatos de carga de Compra', () => {
-    expect(mod).toEqual({ nombre: 'compra', version: '0.4.0' });
+    expect(mod).toEqual({ nombre: 'compra', version: '0.4.1' });
     expect(customElements.get('ucjc-compra')).toBeDefined();
   });
 
@@ -313,16 +313,17 @@ describe('ucjc-compra · Compra C', () => {
     moneda('USD');
     emitir(ADD, camiseta);
     expect(lineas()).toEqual([L('p-1'), L('p-1', 'USD')]);
-    expect($('[data-subtotal="EUR"]').textContent).toContain('19,99 €');
-    expect($('[data-subtotal="USD"]').textContent).toContain('22,01 $'); // 19,99 × 1,1014 → 22,01 (a la baja)
-    expect(total()).toBe('39,98 €'); // con monedas mezcladas se cobra en euros
+    expect($('[data-total-moneda="EUR"] [data-total]').textContent).toBe('19,99 €');
+    expect($('[data-total-moneda="USD"] [data-total]').textContent).toBe('22,01 $'); // 19,99 × 1,1014 → 22,01 (a la baja)
   });
 
-  it('con todo en una moneda, el total va en esa moneda y su equivalente en euros', () => {
+  it('con todo en una moneda, el total va solo en esa moneda', () => {
     moneda('GBP');
     emitir(ADD, { ...camiseta, cantidad: 2 });
     expect(total()).toBe('33,36 £'); // 16,68 £ × 2
-    expect($('[data-equivale]').textContent).toContain('39,98 €');
+    expect($('[data-total-moneda="GBP"]')).not.toBeNull();
+    expect($('[data-total-moneda="EUR"]')).toBeNull();
+    expect($('.totales').textContent.includes('€')).toBe(false);
   });
 
   it('producto, moneda y campaña distintos → cuatro líneas', () => {
@@ -451,5 +452,35 @@ describe('ucjc-compra · Compra C', () => {
     emitir(ADD, camiseta);
     expect(otro.shadowRoot.querySelector('[data-total]').textContent).toBe('19,99 €');
     avisos.mockRestore();
+  });
+  // ---------- Monedas distintas no se juntan (v0.4.1) ----------
+
+  it('con varias monedas hay un total a pagar por moneda y no se suman entre sí', () => {
+    emitir(ADD, camiseta); // 19,99 €
+    moneda('USD');
+    emitir(ADD, { ...camiseta, cantidad: 2 }); // 2 × 22,01 $
+    moneda('GBP');
+    emitir(ADD, { productoId: 'p-2', nombre: 'Taza', precio: 10, cantidad: 1 }); // 8,34 £
+    const totales = [...el.shadowRoot.querySelectorAll('[data-total-moneda]')].map((p) => [p.dataset.totalMoneda, p.querySelector('[data-total]').textContent]);
+    expect(totales).toEqual([['EUR', '19,99 €'], ['USD', '44,02 $'], ['GBP', '8,34 £']]);
+    expect($('[data-separado]')).not.toBeNull();
+    expect($('.totales').textContent.includes('63,99')).toBe(false); // nada de sumarlo todo en euros
+  });
+
+  it('cada línea se muestra solo en su moneda, sin pasarla a euros', () => {
+    moneda('USD');
+    emitir(ADD, camiseta);
+    expect($('.ud').textContent).toBe('22,01 $ / ud.');
+  });
+
+  it('el resumen del pedido da lo pagado en cada moneda por separado', () => {
+    entrar();
+    emitir(ADD, camiseta);
+    moneda('USD');
+    emitir(ADD, camiseta);
+    confirmar().click();
+    expect($('[data-pagado="EUR"]').textContent).toContain('19,99 €');
+    expect($('[data-pagado="USD"]').textContent).toContain('22,01 $');
+    expect($('.ok').textContent).toContain('19,99 € · 22,01 $');
   });
 });

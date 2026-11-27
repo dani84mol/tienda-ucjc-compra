@@ -397,7 +397,8 @@ class UcjcCompra extends HTMLElement {
     this.#ultimoPedido = { ...detail, detalle: lineas };
     emitir(EVT_PED, detail);
     if (EMITIR_PEDIDO_V2) emitir(EVT_PED_V2, this.#detalleV2(detail, lineas));
-    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${importe(aCent(detail.total))})`);
+    const pagado = this.#monedasUsadas(lineas).map((m) => importe(this.#totalEnMoneda(m, lineas), m)).join(' · ');
+    this.#avisar(`Pedido ${detail.pedidoId} confirmado (${pagado})`);
   }
 
   // @2 lleva UNA moneda y como mucho UNA campaña para todo el pedido.
@@ -503,7 +504,7 @@ class UcjcCompra extends HTMLElement {
             const unidad = enMoneda(l.precio, l.moneda);
             return `<tr data-linea="${k}">
               <td>${n}
-                <span class="ud">${importe(unidad, l.moneda)} / ud.${l.moneda === 'EUR' ? '' : ` · ${importe(aCent(l.precio))}`}</span>
+                <span class="ud">${importe(unidad, l.moneda)} / ud.</span>
                 ${this.#etiquetas(l)}
               </td>
               <td class="r"><span class="cant">
@@ -518,16 +519,18 @@ class UcjcCompra extends HTMLElement {
           .join('')
       : '<tr><td colspan="4" class="vacio">Tu carrito está vacío. Añade productos desde el catálogo.</td></tr>';
 
-    // Subtotales por moneda solo si hay algo que no está en euros; el total que se cobra, en euros.
+    // Productos de monedas distintas NO se juntan: ni en la misma línea ni en el mismo total.
+    // Cada moneda tiene su propio «Total a pagar» y nunca se suman entre sí.
     const monedas = this.#monedasUsadas();
-    // Todo en una sola moneda distinta del euro → el total se da en esa moneda (y su equivalente en €).
-    const unaMoneda = monedas.length === 1 && monedas[0] !== 'EUR' ? monedas[0] : null;
-    const subtotales =
-      hay && monedas.length > 1
-        ? monedas
-            .map((m) => `<p class="total" data-subtotal="${m}"><small>Productos en ${MONEDAS[m].nombre}</small><span>${importe(this.#totalEnMoneda(m), m)}</span></p>`)
-            .join('')
-        : '';
+    const totales = hay
+      ? monedas
+          .map((m) => {
+            const n = this.#lineas.filter((l) => l.moneda === m).reduce((s, l) => s + l.cantidad, 0);
+            return `<p class="total final" data-total-moneda="${m}"><small>${n} artículo${n === 1 ? '' : 's'} en ${MONEDAS[m].nombre}</small><b>Total a pagar en ${MONEDAS[m].nombre}: <span data-total>${importe(this.#totalEnMoneda(m), m)}</span></b></p>`;
+          })
+          .join('') +
+        (monedas.length > 1 ? '<p class="sub" data-separado>Cada moneda se paga por separado: sus importes no se suman entre sí.</p>' : '')
+      : `<p class="total final"><small>0 artículos</small><b>Total a pagar: <span data-total>${importe(0)}</span></b></p>`;
     const enCampana = this.#lineas.filter((l) => l.campana).reduce((s, l) => s + l.cantidad, 0);
 
     const p = this.#ultimoPedido;
@@ -538,7 +541,9 @@ class UcjcCompra extends HTMLElement {
           <ul>${p.detalle
             .map((l) => `<li>${l.cantidad} × ${esc(l.nombre)}${l.campana ? ` <b>(${esc(l.etiqueta || l.campana)})</b>` : ''} — ${importe(enMoneda(l.precio, l.moneda) * l.cantidad, l.moneda)}</li>`)
             .join('')}</ul>
-          <p class="total final"><span>Total pagado</span><b>${importe(aCent(p.total))}</b></p>
+          ${this.#monedasUsadas(p.detalle)
+            .map((m) => `<p class="total final" data-pagado="${m}"><span>Total pagado en ${MONEDAS[m].nombre}</span><b>${importe(this.#totalEnMoneda(m, p.detalle), m)}</b></p>`)
+            .join('')}
         </section>`
       : '';
 
@@ -563,12 +568,8 @@ class UcjcCompra extends HTMLElement {
             ${filas}
           </table></div>
           <div class="totales">
-            ${subtotales}
             ${enCampana ? `<p class="total" data-en-campana><small>Artículos con descuento de campaña</small><span>${enCampana}</span></p>` : ''}
-            <p class="total final"><small>${unidades} artículo${unidades === 1 ? '' : 's'}</small><b>Total a pagar: <span data-total>${
-              unaMoneda ? importe(this.#totalEnMoneda(unaMoneda), unaMoneda) : importe(this.#totalCent())
-            }</span></b></p>
-            ${unaMoneda ? `<p class="total" data-equivale><small>Equivale a</small><span>${importe(this.#totalCent())}</span></p>` : ''}
+            ${totales}
           </div>
           <div class="row">
             <button type="button" data-a="vaciar" ${hay ? '' : 'disabled'}>Vaciar</button>
