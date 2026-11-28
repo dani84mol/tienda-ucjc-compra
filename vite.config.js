@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite';
 
-// Copiad este fichero a vuestro repo de pieza como vite.config.js.
-// Produce un único módulo ES: dist/remote.js
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  root: command === 'serve' ? 'demo' : '.',
   build: {
+    outDir: 'dist',
     lib: {
       entry: 'src/main.js',
       formats: ['es'],
@@ -15,4 +15,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

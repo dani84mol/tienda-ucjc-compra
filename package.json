@@ -3,9 +3,9 @@
   "private": true,
   "version": "0.4.1",
   "type": "module",
-  "scripts": {
+"scripts": {
     "dev": "vite",
-    "build": "vite build && node -e \"require('fs').copyFileSync('demo/index.html','dist/index.html')\"",
+    "build": "vite build && node -e \"const fs=require('fs'),v='v'+require('./package.json').version;fs.mkdirSync(v,{recursive:true});fs.cpSync('dist',v,{recursive:true});fs.copyFileSync('demo/index.html',v+'/index.html');fs.writeFileSync('index.html','<!doctype html><meta charset=\\\"utf-8\\\"><meta http-equiv=\\\"refresh\\\" content=\\\"0; url=./'+v+'/\\\"><title>Tienda UCJC · Compra C</title><a href=\\\"./'+v+'/\\\">Ir a '+v+'</a>\\n')\"",
     "preview": "vite preview",
     "test": "vitest run"
   },
